@@ -1,0 +1,21 @@
+{
+	"name": "@reactive-resume/utils",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"exports": {
+		"./color": "./src/color.ts",
+		"./link": "./src/link.ts",
+		"./locale": "./src/locale.ts",
+		"./region": "./src/region.ts",
+		"./string": "./src/string.ts",
+		"./style": "./src/style.ts",
+		"./timezone": "./src/timezone.ts"
+	},
+	"dependencies": {
+		"@uiw/color-convert": "^2.10.3",
+		"cn": "^0.5.2",
+		"uuid": "^14.0.3",
+		"zod": "^4.6.7"
+	}
+}

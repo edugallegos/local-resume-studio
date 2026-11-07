@@ -1,0 +1,37 @@
+{
+	"name": "local-resume-studio",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"license": "MIT",
+	"engines": {
+		"node": "24.x"
+	},
+	"packageManager": "pnpm@12.16.1",
+	"scripts": {
+		"build": "vite build --config apps/studio/vite.config.ts",
+		"lint": "biome check .",
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.6.6",
+		"@reactive-resume/fonts": "workspace:*",
+		"@reactive-resume/pdf": "workspace:*",
+		"@reactive-resume/resume": "workspace:*",
+		"@reactive-resume/schema": "workspace:*",
+		"@reactive-resume/ui": "workspace:*",
+		"@reactive-resume/utils": "workspace:*",
+		"@tailwindcss/vite": "4.3.5",
+		"@types/node": "24.19.2",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"@types/react-reconciler": "0.34.1",
+		"@vitejs/plugin-react": "6.2.1",
+		"happy-dom": "21.0.4",
+		"tailwindcss": "4.3.5",
+		"typescript": "7.0.2",
+		"vite": "8.3.6",
+		"vitest": "5.1.0"
+	}
+}

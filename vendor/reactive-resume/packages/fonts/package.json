@@ -1,0 +1,12 @@
+{
+	"name": "@reactive-resume/fonts",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@reactive-resume/utils": "workspace:*"
+	}
+}

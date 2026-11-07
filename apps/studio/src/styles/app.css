@@ -1,0 +1,5 @@
+@import "tailwindcss" source(none);
+@import "../../../../vendor/reactive-resume/packages/ui/src/styles/tokens.css";
+
+@source "../";
+@source "../../../../vendor/reactive-resume/packages/ui/src";

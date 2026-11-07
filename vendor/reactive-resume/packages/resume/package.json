@@ -1,0 +1,21 @@
+{
+	"name": "@reactive-resume/resume",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"exports": {
+		"./ats": "./src/ats/index.ts",
+		"./ats-pdf": "./src/ats-pdf/index.ts",
+		"./markdown": "./src/markdown.ts",
+		"./proposals": "./src/proposals.ts",
+		"./stylesheet": "./src/stylesheet/index.ts",
+		"./stylesheet/types": "./src/stylesheet/semantic-types.ts"
+	},
+	"dependencies": {
+		"@bramus/specificity": "^2.4.3",
+		"@reactive-resume/schema": "workspace:*",
+		"@reactive-resume/utils": "workspace:*",
+		"css-tree": "^3.2.1",
+		"wink-porter2-stemmer": "2.0.1"
+	}
+}

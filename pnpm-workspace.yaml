@@ -1,0 +1,6 @@
+packages:
+  - apps/*
+  - vendor/reactive-resume/packages/*
+
+overrides:
+  "@types/node": 24.19.2

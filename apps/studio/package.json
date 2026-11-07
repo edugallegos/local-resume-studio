@@ -1,0 +1,12 @@
+{
+	"name": "@local-resume/studio",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"@reactive-resume/schema": "workspace:*",
+		"@reactive-resume/ui": "workspace:*",
+		"react": "19.3.1",
+		"react-dom": "19.3.1"
+	}
+}

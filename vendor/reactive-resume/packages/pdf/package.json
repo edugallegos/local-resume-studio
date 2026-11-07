@@ -1,0 +1,32 @@
+{
+	"name": "@reactive-resume/pdf",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"exports": {
+		"./icons": "./src/forme/phosphor-icons/all.ts",
+		"./browser": "./src/browser.tsx",
+		"./page-map": "./src/page-map.ts",
+		"./semantic-legacy": "./src/semantic/legacy-converter.ts",
+		"./semantic-tree": "./src/semantic/tree.ts",
+		"./filtering": "./src/templates/shared/filtering.ts",
+		"./section-title": "./src/section-title.ts"
+	},
+	"imports": {
+		"#react-pdf-renderer": "./src/forme/primitives.tsx"
+	},
+	"dependencies": {
+		"@formepdf/core": "0.30.0",
+		"@formepdf/react": "0.30.0",
+		"@reactive-resume/fonts": "workspace:*",
+		"@reactive-resume/resume": "workspace:*",
+		"@reactive-resume/schema": "workspace:*",
+		"@reactive-resume/utils": "workspace:*",
+		"fast-png": "^8.0.0",
+		"fflate": "^0.8.3",
+		"harfbuzzjs": "1.6.4",
+		"node-html-parser": "^9.0.6",
+		"react": "19.3.1",
+		"react-reconciler": "0.34.0"
+	}
+}

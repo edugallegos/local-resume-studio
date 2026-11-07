@@ -1,0 +1,17 @@
+{
+	"name": "@reactive-resume/ui",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"exports": {
+		"./components/*": "./src/components/*.tsx",
+		"./styles/tokens.css": "./src/styles/tokens.css"
+	},
+	"dependencies": {
+		"@base-ui/react": "^1.9.0",
+		"@phosphor-icons/react": "^2.1.10",
+		"@reactive-resume/utils": "workspace:*",
+		"class-variance-authority": "^0.7.1",
+		"react": "19.3.1"
+	}
+}

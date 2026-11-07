@@ -1,0 +1,27 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.6/schema.json",
+	"files": {
+		"includes": [
+			"apps/studio/src/**",
+			"apps/studio/index.html",
+			"apps/studio/vite.config.ts",
+			"tests/**",
+			"*.json",
+			"*.ts"
+		]
+	},
+	"formatter": {
+		"enabled": false
+	},
+	"linter": {
+		"enabled": true
+	},
+	"css": {
+		"parser": {
+			"tailwindDirectives": true
+		}
+	},
+	"assist": {
+		"enabled": false
+	}
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Local resume data and generated exports (later tasks use these).
+data/
+
+# Local environment and secrets.
+.env*
+!.env.example
+
+.DS_Store
