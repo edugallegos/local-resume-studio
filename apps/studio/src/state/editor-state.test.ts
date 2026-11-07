@@ -97,6 +97,57 @@ describe("editorReducer", () => {
 		expect(conflicted.data?.basics.name).toBe("Ada Draft Kept");
 	});
 
+	it("stays saving through newer edits and preserves the newer draft after a successful save", () => {
+		const submitted = syntheticResume("Ada Submitted");
+		const newer = syntheticResume("Ada Newer");
+		const edited = editorReducer(
+			{ ...loadedState(), data: submitted, dirty: true, status: "idle" },
+			{ type: "save-start" },
+		);
+
+		const duringSave = editorReducer(edited, { type: "edit", data: newer });
+
+		expect(duringSave.status).toBe("saving");
+		expect(duringSave.dirty).toBe(true);
+		expect(duringSave.data).toBe(newer);
+		expect(duringSave.etag).toBe("etag-1");
+
+		const saved = editorReducer(duringSave, {
+			type: "save-success",
+			data: submitted,
+			etag: "etag-2",
+			submittedData: submitted,
+		});
+
+		expect(saved.status).toBe("idle");
+		expect(saved.dirty).toBe(true);
+		expect(saved.data).toBe(newer);
+		expect(saved.data?.basics.name).toBe("Ada Newer");
+		expect(saved.etag).toBe("etag-2");
+		expect(saved.selectedId).toBe("ada-lovelace");
+	});
+
+	it("uses the saved response when no edits happened during the save", () => {
+		const submitted = syntheticResume("Ada Submitted");
+		const savedData = syntheticResume("Ada Saved");
+		const saving = editorReducer(
+			{ ...loadedState(), data: submitted, dirty: true, status: "idle" },
+			{ type: "save-start" },
+		);
+
+		const saved = editorReducer(saving, {
+			type: "save-success",
+			data: savedData,
+			etag: "etag-2",
+			submittedData: submitted,
+		});
+
+		expect(saved.status).toBe("saved");
+		expect(saved.dirty).toBe(false);
+		expect(saved.data).toBe(savedData);
+		expect(saved.etag).toBe("etag-2");
+	});
+
 	it("reports a load failure without discarding the current draft", () => {
 		const data = syntheticResume("Ada Kept");
 		const state = { ...loadedState(), data, dirty: true, status: "idle" as const };
@@ -106,6 +157,19 @@ describe("editorReducer", () => {
 		expect(failed.status).toBe("error");
 		expect(failed.data).toBe(data);
 		expect(failed.dirty).toBe(true);
+		expect(failed.selectedId).toBe("ada-lovelace");
+	});
+
+	it("keeps the exact draft, ETag, and dirty flag after a non-conflict save error", () => {
+		const data = syntheticResume("Ada Save Error");
+		const state = { ...loadedState(), data, dirty: true, status: "idle" as const };
+
+		const failed = editorReducer(state, { type: "save-error" });
+
+		expect(failed.status).toBe("error");
+		expect(failed.data).toBe(data);
+		expect(failed.dirty).toBe(true);
+		expect(failed.etag).toBe("etag-1");
 		expect(failed.selectedId).toBe("ada-lovelace");
 	});
 });

@@ -289,5 +289,88 @@ describe("ResumeLibrary", () => {
 		expect(JSON.parse(contents)).toEqual(data);
 		expect(contents.trimStart().startsWith("{")).toBe(true);
 		expect(JSON.parse(contents)).not.toHaveProperty("resume");
+		expect(client.read).toHaveBeenCalledWith(item.id);
+	});
+
+	it("exports the exact dirty draft without reading the stale stored file", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const draft = syntheticResume("Ada Draft Export");
+		draft.summary.content = "<p>Unsaved synthetic draft.</p>";
+		const client = makeClient({ list: vi.fn(async () => [item]) });
+		const downloadJson = vi.fn();
+
+		renderLibrary(client, {
+			selectedId: item.id,
+			activeDirtyId: item.id,
+			activeDraft: draft,
+			downloadJson,
+		});
+
+		await screen.findByText(item.fullName);
+		await user.click(screen.getByRole("button", { name: /export selected json/i }));
+
+		await waitFor(() => expect(downloadJson).toHaveBeenCalledTimes(1));
+		const [filename, contents] = vi.mocked(downloadJson).mock.calls[0] ?? [];
+		expect(filename).toBe("ada-lovelace.json");
+		expect(JSON.parse(contents)).toEqual(draft);
+		expect(JSON.parse(contents).basics.name).toBe("Ada Draft Export");
+		expect(contents.trimStart().startsWith("{")).toBe(true);
+		expect(JSON.parse(contents)).not.toHaveProperty("resume");
+		expect(client.read).not.toHaveBeenCalled();
+	});
+
+	it("blocks opening a different file while the active draft is dirty", async () => {
+		const user = userEvent.setup();
+		const active = listItem();
+		const other = listItem({ id: "grace-hopper", label: "grace-hopper", fullName: "Grace Hopper" });
+		const client = makeClient({ list: vi.fn(async () => [active, other]) });
+		const onOpen = vi.fn();
+
+		renderLibrary(client, { activeDirtyId: active.id, onOpen });
+
+		await user.click(await screen.findByRole("button", { name: /open grace hopper/i }));
+
+		expect(client.read).not.toHaveBeenCalled();
+		expect(onOpen).not.toHaveBeenCalled();
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toMatch(/return to the editor and save first/i);
+		expect(screen.getByRole("status").textContent).toMatch(/A draft in this resume has unsaved changes/i);
+	});
+
+	it("returns to the active dirty editor without re-reading the file", async () => {
+		const user = userEvent.setup();
+		const active = listItem();
+		const client = makeClient({ list: vi.fn(async () => [active]) });
+		const onResumeActive = vi.fn();
+
+		renderLibrary(client, { activeDirtyId: active.id, onResumeActive });
+
+		await user.click(await screen.findByRole("button", { name: /open ada lovelace/i }));
+		expect(onResumeActive).toHaveBeenCalledTimes(1);
+		expect(client.read).not.toHaveBeenCalled();
+
+		await user.click(screen.getByRole("button", { name: /return to editor/i }));
+		expect(onResumeActive).toHaveBeenCalledTimes(2);
+	});
+
+	it("prevents renaming and deleting the active dirty file", async () => {
+		const user = userEvent.setup();
+		const active = listItem();
+		const client = makeClient({ list: vi.fn(async () => [active]) });
+		const confirmDelete = vi.fn(() => true);
+
+		renderLibrary(client, { activeDirtyId: active.id, confirmDelete });
+
+		await user.click(await screen.findByRole("button", { name: /rename ada lovelace/i }));
+		expect(screen.queryByLabelText(/resume label/i)).toBeNull();
+		expect((await screen.findByRole("alert")).textContent).toMatch(/return to the editor and save first/i);
+		expect(client.read).not.toHaveBeenCalled();
+		expect(client.rename).not.toHaveBeenCalled();
+
+		await user.click(screen.getByRole("button", { name: /delete ada lovelace/i }));
+		expect(confirmDelete).not.toHaveBeenCalled();
+		expect(client.remove).not.toHaveBeenCalled();
+		expect(client.read).not.toHaveBeenCalled();
 	});
 });

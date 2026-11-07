@@ -7,6 +7,8 @@
 		"@local-resume/store": "workspace:*",
 		"@reactive-resume/schema": "workspace:*",
 		"@reactive-resume/ui": "workspace:*",
+		"dompurify": "3.4.17",
+		"immer": "11.2.9",
 		"react": "19.3.1",
 		"react-dom": "19.3.1"
 	}

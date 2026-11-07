@@ -15,8 +15,10 @@ export type EditorAction =
 	| { type: "load"; selectedId: string; data: ResumeData; etag: string }
 	| { type: "edit"; data: ResumeData }
 	| { type: "save-start" }
-	| { type: "save-success"; data: ResumeData; etag: string }
+	| { type: "save-success"; data: ResumeData; etag: string; submittedData?: ResumeData }
 	| { type: "save-conflict" }
+	| { type: "save-error" }
+	| { type: "clear-error" }
 	| { type: "load-error" }
 	| { type: "reset" };
 
@@ -50,13 +52,23 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 				...state,
 				data: action.data,
 				dirty: true,
-				status: state.status === "conflict" ? "conflict" : "idle",
+				status:
+					state.status === "conflict" ? "conflict" : state.status === "saving" ? "saving" : "idle",
 			};
 
 		case "save-start":
 			return { ...state, status: "saving" };
 
-		case "save-success":
+		case "save-success": {
+			const editedDuringSave =
+				state.data !== null && action.submittedData !== undefined && state.data !== action.submittedData;
+
+			if (editedDuringSave) {
+				// The response is for an older snapshot. Keep the newer draft and make it saveable
+				// against the ETag the successful write just produced.
+				return { ...state, etag: action.etag, dirty: true, status: "idle" };
+			}
+
 			return {
 				...state,
 				data: action.data,
@@ -64,9 +76,16 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 				dirty: false,
 				status: "saved",
 			};
+		}
 
 		case "save-conflict":
 			return { ...state, dirty: true, status: "conflict" };
+
+		case "save-error":
+			return { ...state, status: "error" };
+
+		case "clear-error":
+			return state.status === "error" ? { ...state, status: state.dirty ? "idle" : "saved" } : state;
 
 		case "load-error":
 			return { ...state, status: "error" };

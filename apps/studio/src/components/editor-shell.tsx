@@ -6,6 +6,8 @@ import { Separator } from "@reactive-resume/ui/components/separator";
 import { Spinner } from "@reactive-resume/ui/components/spinner";
 import { cn } from "@reactive-resume/utils/style";
 import type { ReactNode } from "react";
+import { WritePanel } from "../features/write/write-panel";
+import type { ResumeEdit } from "../features/write/resume-edits";
 import type { EditorState } from "../state/editor-state";
 
 export type EditorTab = "write" | "design" | "check";
@@ -16,6 +18,11 @@ export type EditorShellProps = {
 	activeTab: EditorTab;
 	onTabChange: (tab: EditorTab) => void;
 	onBack: () => void;
+	onEdit: (edit: ResumeEdit) => void;
+	onSave: () => void;
+	/** Conflict or save failure text. The draft is never replaced by this message. */
+	saveMessage?: string | null;
+	onDismissSaveMessage?: () => void;
 };
 
 type TabDefinition = {
@@ -31,8 +38,7 @@ const tabs: TabDefinition[] = [
 		id: "write",
 		label: "Write",
 		icon: "pencil-simple",
-		description:
-			"Native editing controls for basics, summary, profiles, experience, education, projects, skills, languages, and certifications arrive in Task 5. The workspace and page layout are ready now.",
+		description: "Edit basics, summary, and the core resume sections. Save explicitly when you are ready to write.",
 		items: ["Basics & summary", "Experience, education, projects", "Skills, languages, certifications"],
 	},
 	{
@@ -60,7 +66,7 @@ const formatUpdatedAt = (value: string | undefined): string | null => {
 	return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 };
 
-function SaveState({ state }: { state: EditorState }) {
+function SaveState({ state, saveMessage }: { state: EditorState; saveMessage?: string | null }) {
 	let content: ReactNode;
 
 	switch (state.status) {
@@ -89,7 +95,12 @@ function SaveState({ state }: { state: EditorState }) {
 			);
 			break;
 		case "error":
-			content = (
+			content = saveMessage ? (
+				<>
+					<Badge variant="danger">Save failed</Badge>
+					<span className="text-xs text-danger-text">Draft kept</span>
+				</>
+			) : (
 				<>
 					<Badge variant="danger">Load error</Badge>
 					<span className="text-xs text-danger-text">Draft kept</span>
@@ -133,8 +144,20 @@ const SkeletonLine = ({ width = "full" }: { width?: "full" | "long" | "medium" |
 	/>
 );
 
-export function EditorShell({ state, resume, activeTab, onTabChange, onBack }: EditorShellProps) {
-	const currentTab = tabs.find((tab) => tab.id === activeTab) ?? tabs[0];
+export function EditorShell({
+	state,
+	resume,
+	activeTab,
+	onTabChange,
+	onBack,
+	onEdit,
+	onSave,
+	saveMessage = null,
+	onDismissSaveMessage,
+}: EditorShellProps) {
+	const canSave = Boolean(
+		state.data && state.selectedId && state.etag && state.dirty && state.status !== "saving",
+	);
 	const fullName = state.data?.basics.name.trim() || "Untitled resume";
 	const headline = state.data?.basics.headline.trim() || "Add a headline in Write";
 	const label = resume?.label ?? state.selectedId ?? "no-file";
@@ -164,8 +187,46 @@ export function EditorShell({ state, resume, activeTab, onTabChange, onBack }: E
 						</p>
 					</div>
 
-					<SaveState state={state} />
+					<SaveState state={state} saveMessage={saveMessage} />
+
+					<Button
+						variant="primary"
+						size="sm"
+						onClick={onSave}
+						loading={state.status === "saving"}
+						disabled={!canSave}
+						aria-label="Save changes"
+					>
+						<Icon name="check" />
+						Save changes
+					</Button>
 				</div>
+
+				{saveMessage ? (
+					<div
+						role="alert"
+						className={cn(
+							"mx-auto flex w-full max-w-[1600px] items-start gap-3 border-t px-4 py-2.5 text-sm sm:px-6",
+							state.status === "conflict"
+								? "border-warn bg-warn-soft text-warn-text"
+								: "border-danger bg-danger-soft text-danger-text",
+						)}
+					>
+						<Icon name="warning-circle" className="mt-0.5 shrink-0" />
+						<p className="flex-1 leading-5">{saveMessage}</p>
+						{onDismissSaveMessage ? (
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								aria-label="Dismiss save message"
+								onClick={onDismissSaveMessage}
+								className="shrink-0"
+							>
+								<Icon name="x" />
+							</Button>
+						) : null}
+					</div>
+				) : null}
 			</header>
 
 			<main className="mx-auto grid w-full max-w-[1600px] flex-1 grid-cols-1 items-start gap-4 px-4 py-4 sm:px-6 lg:grid-cols-[minmax(20rem,0.85fr)_minmax(0,1.4fr)] lg:gap-6 lg:py-6">
@@ -203,41 +264,63 @@ export function EditorShell({ state, resume, activeTab, onTabChange, onBack }: E
 						})}
 					</div>
 
-					<section
-						role="tabpanel"
-						id={`editor-panel-${currentTab.id}`}
-						aria-labelledby={`editor-tab-${currentTab.id}`}
-						className="flex flex-1 flex-col p-5 sm:p-6"
-					>
-						<div className="flex flex-wrap items-start justify-between gap-3">
-							<div>
-								<p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink-3">Workspace</p>
-								<h2 className="mt-1 font-display text-2xl leading-tight text-ink">{currentTab.label}</h2>
-							</div>
-							<Badge variant="info">Placeholder</Badge>
-						</div>
+					{tabs.map((tab) => {
+						const selected = tab.id === activeTab;
+						const isWritePanel = tab.id === "write";
+						return (
+							<section
+								key={tab.id}
+								role="tabpanel"
+								id={`editor-panel-${tab.id}`}
+								aria-labelledby={`editor-tab-${tab.id}`}
+								hidden={!selected}
+								className={cn("flex flex-1 flex-col p-5 sm:p-6", !selected && "hidden")}
+							>
+								<div className="flex flex-wrap items-start justify-between gap-3">
+									<div>
+										<p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink-3">Workspace</p>
+										<h2 className="mt-1 font-display text-2xl leading-tight text-ink">{tab.label}</h2>
+									</div>
+									<Badge variant={isWritePanel ? "accent" : "info"}>
+										{isWritePanel ? "Native editing" : "Placeholder"}
+									</Badge>
+								</div>
 
-						<p className="mt-3 max-w-xl text-sm leading-6 text-ink-2">{currentTab.description}</p>
+								<p className="mt-3 max-w-xl text-sm leading-6 text-ink-2">{tab.description}</p>
 
-						<ul className="mt-6 grid gap-3 sm:grid-cols-3">
-							{currentTab.items.map((item, index) => (
-								<li
-									key={item}
-									className="rounded-md border border-line bg-sunken/60 px-3 py-3 text-xs leading-5 text-ink-2"
-								>
-									<span className="mb-2 flex size-6 items-center justify-center rounded-sm bg-surface text-ink-3 ring-1 ring-line">
-										{index + 1}
-									</span>
-									{item}
-								</li>
-							))}
-						</ul>
+								{isWritePanel ? (
+									<div className="mt-6 flex flex-1 flex-col">
+										{state.data ? <WritePanel data={state.data} onEdit={onEdit} /> : null}
+										<div className="mt-6 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
+											<Icon name="info" />
+											<span>Edits stay in this in-memory draft until you choose Save changes.</span>
+										</div>
+									</div>
+								) : (
+									<>
+										<ul className="mt-6 grid gap-3 sm:grid-cols-3">
+											{tab.items.map((item, index) => (
+												<li
+													key={item}
+													className="rounded-md border border-line bg-sunken/60 px-3 py-3 text-xs leading-5 text-ink-2"
+												>
+													<span className="mb-2 flex size-6 items-center justify-center rounded-sm bg-surface text-ink-3 ring-1 ring-line">
+														{index + 1}
+													</span>
+													{item}
+												</li>
+											))}
+										</ul>
 
-						<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
-							<Icon name="info" />
-							<span>Controls are intentionally disabled in this task so the shell stays honest.</span>
-						</div>
-					</section>
+										<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
+											<Icon name="info" />
+											<span>Controls are intentionally disabled in this task so the shell stays honest.</span>
+										</div>
+									</>
+								)}
+							</section>
+						);
+					})}
 				</section>
 
 				<aside

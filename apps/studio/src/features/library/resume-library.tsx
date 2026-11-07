@@ -13,7 +13,13 @@ export type ResumeLibraryProps = {
 	client: ResumeApiClient;
 	/** The resume currently open in the editor, used for the raw JSON export action. */
 	selectedId?: string | null;
+	/** The active resume id when its in-memory draft has unsaved changes. */
+	activeDirtyId?: string | null;
+	/** The exact in-memory draft for the active dirty selection; exported without a server read. */
+	activeDraft?: ResumeData | null;
 	onOpen: (resume: StoredResume) => void;
+	/** Returns to the already-open editor without re-reading and replacing its draft. */
+	onResumeActive?: () => void;
 	onCreated?: (resume: StoredResume) => void;
 	onDuplicated?: (resume: StoredResume) => void;
 	onRenamed?: (resume: StoredResume, previousId: string) => void;
@@ -61,6 +67,9 @@ const messageOf = (error: unknown): string => {
 	return "The resume library request failed.";
 };
 
+const dirtyDraftMessage =
+	"You have unsaved changes in the open resume. Return to the editor and save first before opening another file, renaming, or deleting this one.";
+
 const confirmDeleteInBrowser = (resume: ResumeListItem): boolean => {
 	if (typeof window === "undefined" || typeof window.confirm !== "function") return true;
 	return window.confirm(`Delete "${displayName(resume)}"? This removes its local JSON file.`);
@@ -82,7 +91,10 @@ const downloadJsonFile = (filename: string, contents: string): void => {
 export function ResumeLibrary({
 	client,
 	selectedId = null,
+	activeDirtyId = null,
+	activeDraft = null,
 	onOpen,
+	onResumeActive,
 	onCreated,
 	onDuplicated,
 	onRenamed,
@@ -120,12 +132,26 @@ export function ResumeLibrary({
 	};
 
 	const openForm = (nextForm: FormState, nextLabel: string): void => {
+		if (nextForm.type === "rename" && nextForm.resume.id === activeDirtyId) {
+			setError(dirtyDraftMessage);
+			return;
+		}
 		setError(null);
 		setForm(nextForm);
 		setLabel(nextLabel);
 	};
 
 	const openResume = async (resume: ResumeListItem): Promise<void> => {
+		if (activeDirtyId === resume.id) {
+			setError(null);
+			onResumeActive?.();
+			return;
+		}
+		if (activeDirtyId && activeDirtyId !== resume.id) {
+			setError(dirtyDraftMessage);
+			return;
+		}
+
 		setBusy(true);
 		setError(null);
 		try {
@@ -172,6 +198,10 @@ export function ResumeLibrary({
 
 	const deleteResume = async (resume: ResumeListItem): Promise<void> => {
 		setError(null);
+		if (resume.id === activeDirtyId) {
+			setError(dirtyDraftMessage);
+			return;
+		}
 		if (!(await Promise.resolve(confirmDelete(resume)))) return;
 
 		setBusy(true);
@@ -221,8 +251,21 @@ export function ResumeLibrary({
 	const exportSelected = async (): Promise<void> => {
 		if (!selectedId) return;
 
-		setBusy(true);
 		setError(null);
+
+		// A dirty draft is the user's current document. Export it directly instead of reading the
+		// stale file on disk (which may have changed externally).
+		if (activeDraft && activeDirtyId === selectedId) {
+			const selected = resumes.find((resume) => resume.id === selectedId);
+			// The download is the raw standard resume object, not an app-specific wrapper.
+			downloadJson(
+				`${selected?.label || selectedId}.json`,
+				`${JSON.stringify(activeDraft, null, 2)}\n`,
+			);
+			return;
+		}
+
+		setBusy(true);
 		try {
 			const resume = await client.read(selectedId);
 			// The download is the raw standard resume object, not an app-specific wrapper.
@@ -279,6 +322,27 @@ export function ResumeLibrary({
 						</Button>
 					</div>
 				</header>
+
+				{activeDirtyId ? (
+					<div
+						role="status"
+						className="flex flex-col gap-3 rounded-lg border border-warn bg-warn-soft px-4 py-3 text-sm text-warn-text sm:flex-row sm:items-center sm:justify-between"
+					>
+						<div className="flex items-start gap-3">
+							<Icon name="warning-circle" className="mt-0.5 shrink-0" />
+							<p className="leading-5">
+								A draft in this resume has unsaved changes. Return to the editor and save first before opening a
+								different file, renaming, or deleting it.
+							</p>
+						</div>
+						{onResumeActive ? (
+							<Button variant="secondary" size="sm" onClick={onResumeActive} className="shrink-0">
+								<Icon name="arrow-left" />
+								Return to editor
+							</Button>
+						) : null}
+					</div>
+				) : null}
 
 				{error ? (
 					<div
