@@ -1,5 +1,6 @@
 packages:
   - apps/*
+  - packages/*
   - vendor/reactive-resume/packages/*
 
 overrides:

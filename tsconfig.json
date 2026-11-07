@@ -20,6 +20,6 @@
 		"noUnusedLocals": false,
 		"noUnusedParameters": false
 	},
-	"include": ["apps/**/*.ts", "apps/**/*.tsx", "tests/**/*.ts", "vitest.config.ts"],
+	"include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
 	"exclude": ["node_modules", "dist", "vendor"]
 }

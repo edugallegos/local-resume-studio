@@ -5,6 +5,7 @@
 			"apps/studio/src/**",
 			"apps/studio/index.html",
 			"apps/studio/vite.config.ts",
+			"packages/local-store/src/**",
 			"tests/**",
 			"*.json",
 			"*.ts"
