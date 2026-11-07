@@ -1,74 +1,91 @@
-import { templateSchema } from "@reactive-resume/schema/templates";
+import type { StoredResume } from "@local-resume/store/types";
 import { Badge } from "@reactive-resume/ui/components/badge";
-import { Button } from "@reactive-resume/ui/components/button";
-import { Separator } from "@reactive-resume/ui/components/separator";
+import { useMemo, useReducer, useState } from "react";
+import { createResumeApiClient } from "./api/client";
+import { type EditorTab, EditorShell } from "./components/editor-shell";
+import { ResumeLibrary } from "./features/library/resume-library";
+import { editorReducer, initialEditorState } from "./state/editor-state";
 
-const templateIds = templateSchema.options;
+type View = "library" | "editor";
 
 export function App() {
+	const client = useMemo(() => createResumeApiClient(), []);
+	const [state, dispatch] = useReducer(editorReducer, initialEditorState);
+	const [view, setView] = useState<View>("library");
+	const [activeTab, setActiveTab] = useState<EditorTab>("write");
+	const [selectedResume, setSelectedResume] = useState<StoredResume | null>(null);
+
+	const handleOpen = (resume: StoredResume): void => {
+		dispatch({
+			type: "load",
+			selectedId: resume.id,
+			data: resume.data,
+			etag: resume.etag,
+		});
+		setSelectedResume(resume);
+		setActiveTab("write");
+		setView("editor");
+	};
+
+	const handleRenamed = (resume: StoredResume, previousId: string): void => {
+		if (state.selectedId !== previousId) return;
+		setSelectedResume(resume);
+		// A clean editor can follow the new filename. A dirty draft keeps its original identity so
+		// nothing is silently discarded; resolving that conflict belongs to the save workflow.
+		if (!state.dirty) {
+			dispatch({
+				type: "load",
+				selectedId: resume.id,
+				data: resume.data,
+				etag: resume.etag,
+			});
+		}
+	};
+
+	const handleDeleted = (id: string): void => {
+		if (state.selectedId !== id) return;
+		dispatch({ type: "reset" });
+		setSelectedResume(null);
+		setView("library");
+	};
+
+	if (view === "editor" && state.data) {
+		return (
+			<EditorShell
+				state={state}
+				resume={selectedResume}
+				activeTab={activeTab}
+				onTabChange={setActiveTab}
+				onBack={() => setView("library")}
+			/>
+		);
+	}
+
 	return (
-		<div className="min-h-screen bg-bg text-ink">
+		<div className="min-h-dvh bg-bg text-ink">
 			<header className="border-b border-line bg-surface">
-				<div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4">
+				<div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
 					<div className="flex items-center gap-3">
 						<span className="flex size-9 items-center justify-center rounded-md bg-accent font-display text-lg text-on-accent">
 							LR
 						</span>
 						<div>
-							<h1 className="font-display text-xl leading-tight">Local Resume Studio</h1>
-							<p className="text-sm text-ink-2">
-								Independent workspace with a pinned Reactive Resume vendor snapshot.
-							</p>
+							<p className="font-display text-xl leading-tight text-ink">Local Resume Studio</p>
+							<p className="text-xs text-ink-3">Desk &amp; Paper · pinned Reactive Resume v6.1.0</p>
 						</div>
 					</div>
-					<Badge variant="accent">v6.1.0 baseline</Badge>
+					<Badge variant="accent">Local only</Badge>
 				</div>
 			</header>
 
-			<main className="mx-auto max-w-5xl px-6 py-10">
-				<section className="rounded-lg border border-line bg-surface p-6 shadow-e1">
-					<div className="flex flex-wrap items-start justify-between gap-4">
-						<div className="max-w-xl">
-							<h2 className="text-lg font-semibold">Workspace ready</h2>
-							<p className="mt-2 text-sm leading-6 text-ink-2">
-								This first task creates the independent Node, React, Vite, and pnpm workspace and pins the
-								Reactive Resume source used by later tasks. Storage, the local API, editing workflows, and Check
-								are intentionally not implemented yet.
-							</p>
-						</div>
-						<Button variant="secondary" disabled>
-							Editor arrives in a later task
-						</Button>
-					</div>
-
-					<Separator className="my-6" />
-
-					<div className="grid gap-6 sm:grid-cols-2">
-						<div>
-							<p className="text-sm font-medium text-ink-2">Vendored packages</p>
-							<p className="mt-2 text-sm leading-6 text-ink-2">
-								Schema, resume ATS/markdown, fonts, PDF/Forme templates, utilities, and the UI primitives used by
-								this shell.
-							</p>
-						</div>
-						<div>
-							<p className="text-3xl font-semibold">{templateIds.length}</p>
-							<p className="mt-1 text-sm text-ink-2">templates registered from the pinned snapshot</p>
-						</div>
-					</div>
-
-					<div className="mt-6 flex flex-wrap gap-2">
-						{templateIds.map((id) => (
-							<Badge key={id} variant="outline">
-								{id}
-							</Badge>
-						))}
-					</div>
-				</section>
-
-				<p className="mt-6 text-xs text-ink-3">
-					Pinned to Reactive Resume v6.1.0 at commit 77f5580a67d1e4379978e80410e0cd02ea3fd446.
-				</p>
+			<main>
+				<ResumeLibrary
+					client={client}
+					selectedId={state.selectedId}
+					onOpen={handleOpen}
+					onRenamed={handleRenamed}
+					onDeleted={handleDeleted}
+				/>
 			</main>
 		</div>
 	);

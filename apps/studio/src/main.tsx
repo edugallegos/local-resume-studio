@@ -9,6 +9,8 @@ if (!root) {
 	throw new Error("Missing #root element in apps/studio/index.html");
 }
 
+root.classList.add("min-h-dvh");
+
 createRoot(root).render(
 	<StrictMode>
 		<App />

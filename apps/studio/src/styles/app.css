@@ -3,3 +3,180 @@
 
 @source "../";
 @source "../../../../vendor/reactive-resume/packages/ui/src";
+
+@layer base {
+	html,
+	body,
+	#root {
+		min-height: 100%;
+	}
+}
+
+@layer components {
+	/* The persistent paper column. The width and aspect ratio mirror an A4 page. */
+	.studio-page {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		width: min(100%, 46rem);
+		aspect-ratio: 210 / 297;
+		container-type: inline-size;
+		overflow: hidden;
+		border-radius: 2px;
+		background: var(--paper);
+		padding: clamp(1.5rem, 4.5cqw, 3.5rem);
+		color: var(--ink);
+		box-shadow: var(--shadow-page);
+	}
+
+	.studio-page__masthead {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.studio-page__eyebrow {
+		font-size: 0.58rem;
+		font-weight: 700;
+		letter-spacing: 0.18em;
+		line-height: 1.4;
+		text-transform: uppercase;
+		color: var(--ink-3);
+	}
+
+	.studio-page__name {
+		margin-top: 0.15rem;
+		font-family: var(--font-display);
+		font-size: clamp(1.35rem, 4cqw, 2rem);
+		line-height: 1.05;
+		color: var(--ink);
+	}
+
+	.studio-page__headline {
+		margin-top: 0.2rem;
+		font-size: clamp(0.66rem, 1.6cqw, 0.8rem);
+		line-height: 1.45;
+		color: var(--ink-2);
+	}
+
+	.studio-page__avatar {
+		display: flex;
+		flex: none;
+		align-items: center;
+		justify-content: center;
+		width: clamp(2.5rem, 8cqw, 3.5rem);
+		aspect-ratio: 1;
+		border-radius: 999px;
+		background: var(--accent-soft);
+		font-family: var(--font-display);
+		font-size: clamp(0.9rem, 2.6cqw, 1.2rem);
+		color: var(--accent-text);
+	}
+
+	.studio-page__rule {
+		height: 1px;
+		background: var(--line);
+	}
+
+	.studio-page__columns {
+		display: grid;
+		grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+		gap: clamp(1rem, 3.5cqw, 2rem);
+	}
+
+	.studio-page__column {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 0.7rem;
+	}
+
+	.studio-page__section-title {
+		font-size: 0.6rem;
+		font-weight: 700;
+		letter-spacing: 0.14em;
+		line-height: 1.4;
+		text-transform: uppercase;
+		color: var(--accent-text);
+	}
+
+	.studio-page__section-title--spaced {
+		margin-top: 0.5rem;
+	}
+
+	.studio-page__entry {
+		display: flex;
+		flex-direction: column;
+		gap: 0.32rem;
+	}
+
+	.studio-page__line {
+		display: block;
+		height: 0.38rem;
+		width: 100%;
+		border-radius: 999px;
+		background: var(--sunken);
+	}
+
+	.studio-page__line--long {
+		width: 88%;
+	}
+
+	.studio-page__line--medium {
+		width: 68%;
+	}
+
+	.studio-page__line--short {
+		width: 44%;
+		background: var(--line);
+	}
+
+	.studio-page__chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+	}
+
+	.studio-page__chips span {
+		display: block;
+		height: 0.85rem;
+		border-radius: 999px;
+		background: var(--accent-soft);
+	}
+
+	.studio-page__chips span:nth-child(1) {
+		width: 3.2rem;
+	}
+
+	.studio-page__chips span:nth-child(2) {
+		width: 2.4rem;
+	}
+
+	.studio-page__chips span:nth-child(3) {
+		width: 3.8rem;
+	}
+
+	.studio-page__chips span:nth-child(4) {
+		width: 2.1rem;
+	}
+
+	.studio-page__chips span:nth-child(5) {
+		width: 2.9rem;
+	}
+
+	.studio-page__note {
+		margin-top: auto;
+		border-top: 1px dashed var(--line-2);
+		padding-top: 0.75rem;
+		font-size: clamp(0.56rem, 1.3cqw, 0.66rem);
+		line-height: 1.5;
+		color: var(--ink-3);
+	}
+
+	@media (max-width: 480px) {
+		.studio-page__columns {
+			grid-template-columns: minmax(0, 1fr);
+		}
+	}
+}
