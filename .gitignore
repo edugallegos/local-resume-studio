@@ -4,8 +4,9 @@ coverage/
 .vite/
 *.tsbuildinfo
 
-# Local resume data and generated exports (later tasks use these).
+# Local resume data and generated exports. RESUME_DATA_DIR defaults to data/.
 data/
+apps/studio/dist/
 
 # Local environment and secrets.
 .env*

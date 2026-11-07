@@ -10,7 +10,9 @@
 	"packageManager": "pnpm@12.16.1",
 	"scripts": {
 		"build": "vite build --config apps/studio/vite.config.ts",
+		"dev": "node scripts/dev.mjs",
 		"lint": "biome check .",
+		"start": "node --import tsx apps/studio/server/index.ts",
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit"
 	},
@@ -31,6 +33,7 @@
 		"@vitejs/plugin-react": "6.2.1",
 		"happy-dom": "21.0.4",
 		"tailwindcss": "4.3.5",
+		"tsx": "4.23.15",
 		"typescript": "7.0.2",
 		"vite": "8.3.6",
 		"vitest": "5.1.0"

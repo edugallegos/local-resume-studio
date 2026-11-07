@@ -4,6 +4,7 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
+		"@local-resume/store": "workspace:*",
 		"@reactive-resume/schema": "workspace:*",
 		"@reactive-resume/ui": "workspace:*",
 		"react": "19.3.1",

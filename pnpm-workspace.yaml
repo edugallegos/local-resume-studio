@@ -3,5 +3,8 @@ packages:
   - packages/*
   - vendor/reactive-resume/packages/*
 
+allowBuilds:
+  esbuild: true
+
 overrides:
   "@types/node": 24.19.2

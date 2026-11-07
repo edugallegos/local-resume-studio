@@ -3,9 +3,11 @@
 	"files": {
 		"includes": [
 			"apps/studio/src/**",
+			"apps/studio/server/**",
 			"apps/studio/index.html",
 			"apps/studio/vite.config.ts",
 			"packages/local-store/src/**",
+			"scripts/**",
 			"tests/**",
 			"*.json",
 			"*.ts"
