@@ -295,4 +295,84 @@ test.describe("local editor round trips", () => {
 		// The isolated test draft is intentionally left unsaved; the saved file still has two pages.
 		await expect(page.getByRole("button", { name: "Save changes" })).toBeEnabled();
 	});
+
+	test("moves rendered overflow sections to a new authored page without saving", async ({ page }) => {
+		const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as {
+			basics: { name: string };
+			summary: { content: string };
+			sections: { experience: { items: Record<string, unknown>[] } };
+		};
+		const item = fixture.sections.experience.items[0] ?? {};
+		fixture.basics.name = "Overflow Synthetic";
+		fixture.summary.content = `<p>${"Synthetic summary sentence. ".repeat(40)}</p>`;
+		fixture.sections.experience.items = Array.from({ length: 16 }, (_, index) => ({
+			...item,
+			id: `synthetic-overflow-${index + 1}`,
+			company: `Synthetic Company ${index + 1}`,
+			position: `Synthetic Role ${index + 1}`,
+			description: `<p>${"Synthetic responsibility. ".repeat(12)}</p>`,
+		}));
+
+		await openLibrary(page);
+		await page.getByLabel("Import resume JSON").setInputFiles({
+			name: "overflow-synthetic.json",
+			mimeType: "application/json",
+			buffer: Buffer.from(JSON.stringify(fixture)),
+		});
+		const open = page.getByRole("button", { name: "Open Overflow Synthetic" });
+		await expect(open).toBeVisible();
+		await open.click();
+		await expect(page.getByLabel("Full name")).toHaveValue("Overflow Synthetic");
+
+		await page.getByRole("tab", { name: "Design" }).click();
+		const status = page.locator('section[aria-label="Page overflow status"]');
+		await expect(status).toContainText(/runs to \d+ pages/i, { timeout: 90_000 });
+		await expect(status).toContainText(/Add page moves overflow sections/i, { timeout: 90_000 });
+
+		// Loaded at the desktop size; the spill action must still work at narrow width.
+		await page.setViewportSize({ width: 390, height: 844 });
+		const addPage = page.getByRole("button", { name: "Add page", exact: true });
+		await expect(addPage).toBeVisible();
+		await addPage.click();
+		await expect(page.getByRole("heading", { name: "Page 2", level: 4 })).toBeVisible();
+		const pageTwo = page.locator('section[data-page-index="1"]');
+		await expect(pageTwo.getByRole("checkbox", { name: "Show Experience" })).toBeVisible();
+		await expect(
+			page.locator('section[data-page-index="0"]').getByRole("checkbox", { name: "Show Experience" }),
+		).toHaveCount(0);
+		await expect(page.getByRole("button", { name: "Save changes" })).toBeEnabled();
+	});
+
+	test("clicks an entry in the applied PDF to focus its matching Write field without saving", async ({
+		page,
+	}) => {
+		const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as { basics: { name: string } };
+		fixture.basics.name = "Click Synthetic";
+
+		await openLibrary(page);
+		await page.getByLabel("Import resume JSON").setInputFiles({
+			name: "click-synthetic.json",
+			mimeType: "application/json",
+			buffer: Buffer.from(JSON.stringify(fixture)),
+		});
+		const open = page.getByRole("button", { name: "Open Click Synthetic" });
+		await expect(open).toBeVisible();
+		await open.click();
+		await expect(page.getByLabel("Full name")).toHaveValue("Click Synthetic");
+
+		const entry = page.getByRole("button", { name: "Experience 1: Analytical Engine Works" });
+		await expect(entry).toBeVisible({ timeout: 90_000 });
+
+		// Loaded at the desktop size; the PDF entry must remain clickable at narrow width.
+		await page.setViewportSize({ width: 390, height: 844 });
+		await expect(entry).toBeVisible();
+		await entry.click();
+
+		await expect(page.getByRole("tab", { name: "Write" })).toHaveAttribute("aria-selected", "true");
+		await expect(
+			page.locator("#write-experience-019bef5a-0000-7000-8000-000000000001-company"),
+		).toBeFocused();
+		await expect(page.locator('[data-page-map-target="item"][data-selected="true"]')).toHaveCount(1);
+		await expect(page.getByRole("button", { name: "Save changes" })).toBeDisabled();
+	});
 });

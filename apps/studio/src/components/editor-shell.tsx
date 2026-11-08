@@ -19,6 +19,7 @@ import {
 	type FitStep,
 } from "../features/design/fit";
 import { DesignPanel } from "../features/design/design-panel";
+import { spillingSections } from "../features/design/spill";
 import {
 	templateDisplayName,
 	type TemplateThumbnailDependencies,
@@ -55,6 +56,9 @@ export type EditorShellProps = {
 	selectedIssue?: PageMapTarget | null;
 	onReviewIssue: (issue: CheckIssue) => void;
 	onShowOnPdf: (target: PageMapTarget) => void;
+	/** The target selected by clicking the applied PDF preview. */
+	selectedPreviewTarget?: PageMapTarget | null;
+	onSelectPreviewTarget?: (target: PageMapTarget) => void;
 	/** Tests can disable or inject the gallery's PDF thumbnail renderer. */
 	designThumbnailsEnabled?: boolean;
 	designThumbnailDependencies?: TemplateThumbnailDependencies;
@@ -219,6 +223,8 @@ export function EditorShell({
 	selectedIssue = null,
 	onReviewIssue,
 	onShowOnPdf,
+	selectedPreviewTarget = null,
+	onSelectPreviewTarget,
 	designThumbnailsEnabled = true,
 	designThumbnailDependencies,
 	fitRenderTimeoutMs = FIT_RENDER_TIMEOUT_MS,
@@ -261,7 +267,10 @@ export function EditorShell({
 		return { ...state.data, metadata: { ...state.data.metadata, template: previewTemplate } };
 	}, [previewTemplate, state.data]);
 
-	const [appliedRender, setAppliedRender] = useState<ResumePdfRender | null>(null);
+	const [appliedRender, setAppliedRender] = useState<{
+		result: ResumePdfRender;
+		data: ResumeData;
+	} | null>(null);
 	const [fitRunning, setFitRunning] = useState(false);
 	const [fitMessage, setFitMessage] = useState<string | null>(null);
 	const dataRef = useRef<ResumeData | null>(state.data);
@@ -278,14 +287,14 @@ export function EditorShell({
 	}, [previewTemplate]);
 
 	const handlePreviewRendered = useCallback(
-		(result: ResumePdfRender | null) => {
+		(snapshot: { result: ResumePdfRender; data: ResumeData } | null) => {
 			// A temporary template never becomes the downloadable PDF. The applied render keeps that role.
 			if (isPreviewing) return;
-			setAppliedRender(result);
-			const pageCount = result ? result.pageMap.pages.length || null : null;
+			setAppliedRender(snapshot);
+			const pageCount = snapshot ? snapshot.result.pageMap.pages.length || null : null;
 			renderStateRef.current = { version: renderStateRef.current.version + 1, pageCount };
 			for (const notify of [...renderWaitersRef.current]) notify();
-			onPdfRendered?.(result);
+			onPdfRendered?.(snapshot?.result ?? null);
 		},
 		[isPreviewing, onPdfRendered],
 	);
@@ -427,6 +436,15 @@ export function EditorShell({
 
 		setFitMessage(result.applied ? "Fit applied." : "Already fits.");
 	};
+
+	const renderedPages = appliedRender ? appliedRender.result.pageMap.pages.length || null : null;
+	const appliedRenderIsCurrent = appliedRender !== null && sameResume(appliedRender.data, state.data);
+	// A stale map or a temporary template preview must never choose which sections move.
+	const spillSections =
+		!isPreviewing && appliedRenderIsCurrent && appliedRender && state.data
+			? spillingSections(state.data.metadata.layout.pages, appliedRender.result.pageMap)
+			: null;
+	const renderStale = isPreviewing || (appliedRender !== null && !appliedRenderIsCurrent);
 
 	return (
 		<div className="flex min-h-dvh flex-col bg-bg text-ink">
@@ -612,7 +630,9 @@ export function EditorShell({
 												onPreviewTemplate={setPreviewTemplate}
 												thumbnailsEnabled={designThumbnailsEnabled && activeTab === "design"}
 												thumbnailDependencies={designThumbnailDependencies}
-												renderedPages={appliedRender ? appliedRender.pageMap.pages.length || null : null}
+												renderedPages={renderedPages}
+												spillSections={spillSections}
+												renderStale={renderStale}
 												fitRunning={fitRunning}
 												fitMessage={fitMessage}
 												onFit={() => void runFit()}
@@ -724,7 +744,10 @@ export function EditorShell({
 								renderPdf={renderPdf}
 								loadDocument={loadPdfDocument}
 								selectedIssue={selectedIssue}
-								onRendered={handlePreviewRendered}
+								selectedTarget={selectedPreviewTarget}
+								onSelectTarget={onSelectPreviewTarget}
+								onRenderSnapshot={handlePreviewRendered}
+								interactive={!isPreviewing}
 							/>
 						) : null}
 					</div>

@@ -135,6 +135,9 @@ describe("WritePanel", () => {
 		expect(screen.getByLabelText(/profile 1: website url/i)).toBeTruthy();
 		expect(screen.getByLabelText(/skill 1: keywords/i)).toBeTruthy();
 		expect(screen.getByLabelText(/language 1: level \(0–5\)/i)).toBeTruthy();
+
+		// A preview-selected section focuses its heading programmatically.
+		expect(document.getElementById("write-section-experience-title")?.tabIndex).toBe(-1);
 	});
 
 	it("edits basics fields without changing the stored summary HTML", async () => {

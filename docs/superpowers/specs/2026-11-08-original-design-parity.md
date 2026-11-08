@@ -11,6 +11,8 @@ Bring the most useful parts of Reactive Resume v6.1.0's Design workflow into Loc
 - Expose advanced typography, color/level display, date, locale, page spacing, and visibility settings in a collapsed group, with a safe design-default reset.
 - Edit page-by-page section placement, page count/full-width state, and two-column sidebar placement/width using the resume's existing metadata.
 - Show when the PDF spills beyond authored pages and offer page addition or a one-step-at-a-time Fit action that tightens spacing, margins, then text size down to 9 pt.
+- When the applied PDF spills, move eligible overflow sections onto a new authored page while keeping each section in its current column; explain when no section can move safely.
+- Let users select a header, section, or entry in the applied PDF preview to open its matching editable field in Write.
 - Keep all changes in the in-memory draft until the user chooses Save. Temporary template previews must remain non-persistent.
 
 ## Non-goals
@@ -34,6 +36,7 @@ Bring the most useful parts of Reactive Resume v6.1.0's Design workflow into Loc
 - Use the current renderer and PDF preview callbacks. Do not save as a side effect of editing.
 - Use synthetic test data and temporary data roots. Never read personal resume files for these changes.
 - Reset only visual defaults. Keep resume content, page/section placement, locale, date format, custom style rules, and optional stylesheet untouched.
+- Page-map actions must use the render's exact resume snapshot; stale or temporary template previews must not move sections or select stale targets.
 
 ## Verification
 

@@ -13,6 +13,21 @@ const syntheticResume = (): ResumeData => {
 	const data = structuredClone(defaultResumeData);
 	data.basics.name = "Ada Lovelace";
 	data.summary.content = "<p>Synthetic preview fixture.</p>";
+	data.sections.experience.title = "Experience";
+	data.sections.experience.items = [
+		{
+			id: "experience-1",
+			hidden: false,
+			company: "Analytical Engine Works",
+			position: "Programmer",
+			location: "",
+			period: "",
+			dates: { start: null, end: null, present: false },
+			website: { url: "", label: "", inlineLink: false },
+			description: "",
+			roles: [],
+		},
+	];
 	return data;
 };
 
@@ -90,12 +105,13 @@ afterEach(() => {
 });
 
 describe("PdfPreview", () => {
-	it("renders the PDF without default page-map diagnostic overlays", async () => {
+	it("renders accessible interactive controls for every page-map region and reports their snapshots", async () => {
 		const data = syntheticResume();
 		const result = rendered();
 		const renderPdf = vi.fn(async () => result);
 		const loadDocument = vi.fn<LoadPdfDocument>(async () => pdfDocument());
 		const onRendered = vi.fn();
+		const onRenderSnapshot = vi.fn();
 
 		render(
 			<PdfPreview
@@ -103,6 +119,7 @@ describe("PdfPreview", () => {
 				renderPdf={renderPdf}
 				loadDocument={loadDocument}
 				onRendered={onRendered}
+				onRenderSnapshot={onRenderSnapshot}
 			/>,
 		);
 
@@ -111,7 +128,41 @@ describe("PdfPreview", () => {
 		expect(renderPdf).toHaveBeenCalledWith(data);
 		expect(loadDocument).toHaveBeenCalledWith(result.blob);
 		await waitFor(() => expect(onRendered).toHaveBeenCalledWith(result));
-		expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(0);
+		expect(onRenderSnapshot).toHaveBeenLastCalledWith({ result, data });
+
+		expect(await screen.findByRole("button", { name: "Header: Ada Lovelace" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Experience section" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Experience 1: Analytical Engine Works" })).toBeTruthy();
+		expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(3);
+	});
+
+	it("reports the selected page target and keeps item controls above their section", async () => {
+		const data = syntheticResume();
+		const onSelectTarget = vi.fn();
+
+		render(
+			<PdfPreview
+				data={data}
+				renderPdf={async () => rendered()}
+				loadDocument={async () => pdfDocument()}
+				onSelectTarget={onSelectTarget}
+			/>,
+		);
+
+		const item = await screen.findByRole("button", { name: "Experience 1: Analytical Engine Works" });
+		const section = screen.getByRole("button", { name: "Experience section" });
+		expect(Number(item.className.match(/z-(\d+)/)?.[1])).toBeGreaterThan(
+			Number(section.className.match(/z-(\d+)/)?.[1]),
+		);
+
+		item.focus();
+		expect(document.activeElement).toBe(item);
+		fireEvent.click(item);
+		expect(onSelectTarget).toHaveBeenCalledWith({
+			kind: "item",
+			sectionId: "experience",
+			itemId: "experience-1",
+		});
 	});
 
 	it("highlights only the supplied selected issue target", async () => {
@@ -128,11 +179,74 @@ describe("PdfPreview", () => {
 		);
 
 		await screen.findByLabelText("PDF page 1");
-		await waitFor(() => expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(1));
-		const selected = document.querySelector("[data-page-map-target]");
-		expect(selected?.getAttribute("data-page-map-target")).toBe("item");
-		expect(selected?.getAttribute("data-selected")).toBe("true");
+		await waitFor(() => expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(3));
+		const selected = document.querySelector('[data-page-map-target="item"][data-selected="true"]');
+		expect(selected).not.toBeNull();
 		expect(selected?.getAttribute("data-item-id")).toBe("experience-1");
+	});
+
+	it("keeps a temporary or stale preview layer non-interactive", async () => {
+		const data = syntheticResume();
+		const onSelectTarget = vi.fn();
+
+		const { rerender } = render(
+			<PdfPreview
+				data={data}
+				renderPdf={async () => rendered()}
+				loadDocument={async () => pdfDocument()}
+				onSelectTarget={onSelectTarget}
+			/>,
+		);
+		await screen.findByRole("button", { name: "Experience 1: Analytical Engine Works" });
+
+		rerender(
+			<PdfPreview
+				data={data}
+				renderPdf={async () => rendered()}
+				loadDocument={async () => pdfDocument()}
+				onSelectTarget={onSelectTarget}
+				interactive={false}
+			/>,
+		);
+		await waitFor(() =>
+			expect(screen.queryByRole("button", { name: "Experience 1: Analytical Engine Works" })).toBeNull(),
+		);
+		expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(0);
+	});
+
+	it("disables target controls while a newer render has not been promoted", async () => {
+		const data = syntheticResume();
+		const first = pdfDocument();
+		const second = pdfDocument();
+		let resolveSecond: (document: PdfDocumentLike) => void = () => undefined;
+		const pendingSecond = new Promise<PdfDocumentLike>((resolve) => {
+			resolveSecond = resolve;
+		});
+		const loadDocument = vi
+			.fn<LoadPdfDocument>()
+			.mockResolvedValueOnce(first)
+			.mockImplementationOnce(() => pendingSecond);
+		const renderPdf = async () => rendered();
+
+		const { rerender } = render(
+			<PdfPreview data={data} renderPdf={renderPdf} loadDocument={loadDocument} />,
+		);
+		await screen.findByRole("button", { name: "Experience 1: Analytical Engine Works" });
+
+		const next = syntheticResume();
+		next.basics.name = "Grace Hopper";
+		rerender(<PdfPreview data={next} renderPdf={renderPdf} loadDocument={loadDocument} />);
+		await waitFor(() => expect(loadDocument).toHaveBeenCalledTimes(2));
+
+		// The old active layer is still visible, but it does not match the current draft.
+		expect(document.querySelector('[data-pdf-layer="active"]')).not.toBeNull();
+		expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(0);
+
+		await act(async () => {
+			resolveSecond(second);
+			await pendingSecond;
+		});
+		expect(await screen.findByRole("button", { name: "Header: Grace Hopper" })).toBeTruthy();
 	});
 
 	it("does not start overlapping page renders on one canvas under StrictMode", async () => {
@@ -311,7 +425,7 @@ describe("PdfPreview", () => {
 		expect(screen.getByText(/Missing fonts/i).textContent).toContain("Merriweather");
 		expect(screen.getByText(/could not be drawn/i).textContent).toContain("U+20B9");
 		expect(screen.getByText(/picture URL/i).textContent).toContain("images.example.test");
-		expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(0);
+		expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(3);
 	});
 
 	it("keeps the last completed document visible until a replacement is fully drawable", async () => {

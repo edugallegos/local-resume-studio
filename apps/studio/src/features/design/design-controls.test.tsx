@@ -8,6 +8,7 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { editResume, type ResumeEdit } from "../write/resume-edits";
 import { DENSITY_PRESETS, DesignPanel, FONT_PAIRINGS, SECTION_LABELS } from "./design-panel";
+import type { SpillingSections } from "./spill";
 import { templateSampleImage, type TemplateThumbnailDependencies } from "./template-thumbnail";
 
 /** Synthetic v6.1.0 fixture. Never use a real person's resume here. */
@@ -26,6 +27,9 @@ type HarnessProps = {
 	onPreviewTemplate?: (template: Template | null) => void;
 	thumbnailsEnabled?: boolean;
 	thumbnailDependencies?: TemplateThumbnailDependencies;
+	renderedPages?: number | null;
+	spillSections?: SpillingSections | null;
+	renderStale?: boolean;
 };
 
 function Harness({
@@ -35,6 +39,9 @@ function Harness({
 	onPreviewTemplate,
 	thumbnailsEnabled = false,
 	thumbnailDependencies,
+	renderedPages = null,
+	spillSections = null,
+	renderStale = false,
 }: HarnessProps) {
 	const [data, setData] = useState(initialData);
 	return (
@@ -51,13 +58,23 @@ function Harness({
 			onPreviewTemplate={onPreviewTemplate}
 			thumbnailsEnabled={thumbnailsEnabled}
 			thumbnailDependencies={thumbnailDependencies}
+			renderedPages={renderedPages}
+			spillSections={spillSections}
+			renderStale={renderStale}
 		/>
 	);
 }
 
 const setup = (
 	data = syntheticResume(),
-	options: Pick<HarnessProps, "thumbnailsEnabled" | "thumbnailDependencies"> = {},
+	options: Pick<
+		HarnessProps,
+		| "thumbnailsEnabled"
+		| "thumbnailDependencies"
+		| "renderedPages"
+		| "spillSections"
+		| "renderStale"
+	> = {},
 ) => {
 	const onData = vi.fn<(data: ResumeData) => void>();
 	const onEdit = vi.fn<(edit: ResumeEdit) => void>();
@@ -623,5 +640,51 @@ describe("DesignPanel advanced controls", () => {
 
 		await user.click(screen.getByRole("checkbox", { name: "Full width for page 2" }));
 		expect(latest().metadata.layout.pages[1]?.fullWidth).toBe(true);
+	});
+});
+
+describe("DesignPanel overflow recovery", () => {
+	it("moves the sections named by a current applied render when Add page is used", async () => {
+		const spillSections: SpillingSections = { main: ["experience"], sidebar: [] };
+		const { user, latest, onEdit } = setup(syntheticResume(), {
+			renderedPages: 2,
+			spillSections,
+		});
+
+		expect(screen.getByText(/runs to 2 pages; 1 authored page/i)).toBeTruthy();
+		expect(screen.getByText(/Add page moves overflow sections/i)).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "Add page" }));
+
+		expect(onEdit).toHaveBeenCalledWith({ type: "add-page-with-spill", sections: spillSections });
+		expect(latest().metadata.layout.pages).toHaveLength(2);
+		expect(latest().metadata.layout.pages[0]?.main).not.toContain("experience");
+		expect(latest().metadata.layout.pages[1]?.main).toEqual(["experience"]);
+	});
+
+	it("keeps a clearly labeled blank-page action and waits when the render map is stale", async () => {
+		const { user, onEdit } = setup(syntheticResume(), {
+			renderedPages: 2,
+			renderStale: true,
+		});
+
+		expect(screen.getByText(/Waiting for the updated preview before moving overflow sections/i)).toBeTruthy();
+		await user.click(screen.getByRole("button", { name: "Add blank page" }));
+
+		expect(onEdit).toHaveBeenCalledWith({ type: "add-page" });
+	});
+
+	it("explains an indivisible overflow and keeps the blank-page action available", async () => {
+		const { user, onEdit } = setup(syntheticResume(), {
+			renderedPages: 2,
+			spillSections: null,
+		});
+
+		expect(
+			screen.getByText(/Automatic movement isn't available for an indivisible overflow section/i),
+		).toBeTruthy();
+		await user.click(screen.getByRole("button", { name: "Add blank page" }));
+
+		expect(onEdit).toHaveBeenCalledWith({ type: "add-page" });
 	});
 });

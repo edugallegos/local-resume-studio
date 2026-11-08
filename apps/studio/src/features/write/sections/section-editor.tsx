@@ -2,6 +2,7 @@ import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { Button } from "@reactive-resume/ui/components/button";
 import { Icon, type IconName } from "@reactive-resume/ui/components/icon";
 import type { EditableSection, ResumeEdit } from "../resume-edits";
+import { writeSectionHeadingId } from "../write-focus";
 import { ItemEditor, type SectionField } from "./item-editor";
 
 export type SectionDefinition = {
@@ -130,14 +131,18 @@ export type SectionEditorProps = {
 export function SectionEditor({ section, data, onEdit }: SectionEditorProps) {
 	const definition = sectionDefinitions[section];
 	const items = (data.sections[section] as unknown as { items: Record<string, unknown>[] }).items;
-	const titleId = `write-section-${section}-title`;
+	const titleId = writeSectionHeadingId(section);
 	const plural = items.length === 1 ? definition.singular : `${definition.singular}s`;
 
 	return (
 		<section aria-labelledby={titleId} className="border-b border-line pb-6 last:border-b-0 last:pb-0">
 			<div className="flex flex-wrap items-start justify-between gap-3">
 				<div>
-					<h3 id={titleId} className="flex items-center gap-2 text-sm font-semibold text-ink">
+					<h3
+						id={titleId}
+						tabIndex={-1}
+						className="flex items-center gap-2 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+					>
 						<Icon name={definition.icon} className="text-ink-3" />
 						{definition.title}
 					</h3>

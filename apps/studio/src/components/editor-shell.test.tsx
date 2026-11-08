@@ -207,8 +207,40 @@ const pdfWithPages = (pages: number): ResumePdfRender => ({
 	lostCharacters: [],
 });
 
+const pdfWithSpillingExperience = (): ResumePdfRender => ({
+	...pdfWithPages(2),
+	pageMap: {
+		pages: [
+			{ width: 595, height: 842 },
+			{ width: 595, height: 842 },
+		],
+		nodes: [
+			{
+				kind: "section",
+				sectionId: "summary",
+				key: "page-1/section-summary",
+				page: 0,
+				x: 20,
+				y: 70,
+				width: 300,
+				height: 40,
+			},
+			{
+				kind: "section",
+				sectionId: "experience",
+				key: "page-2/section-experience",
+				page: 1,
+				x: 20,
+				y: 20,
+				width: 300,
+				height: 200,
+			},
+		],
+	},
+});
+
 describe("EditorShell authored-page overflow and Fit", () => {
-	it("reports overflow from completed applied renders and offers Add page while leaving the viewport Fit control intact", async () => {
+	it("reports overflow from completed applied renders and offers a blank page while leaving the viewport Fit control intact", async () => {
 		const onEdit = vi.fn<(edit: ResumeEdit) => void>();
 		const onPdfRendered = vi.fn<(result: ResumePdfRender | null) => void>();
 		const renderPdf = vi.fn(async (data: ResumeData) => {
@@ -229,7 +261,7 @@ describe("EditorShell authored-page overflow and Fit", () => {
 		expect(await screen.findByText(/runs to 2 pages; 1 authored page/i)).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Fit to width" })).toBeTruthy();
 
-		await user.click(screen.getByRole("button", { name: "Add page" }));
+		await user.click(screen.getByRole("button", { name: "Add blank page" }));
 		expect(onEdit).toHaveBeenCalledWith({ type: "add-page" });
 		expect(await screen.findByText(/fits within 2 authored pages/i)).toBeTruthy();
 	});
@@ -442,5 +474,94 @@ describe("EditorShell authored-page overflow and Fit", () => {
 		});
 		expect(restore.state.typography.body.fontSize).toBe(snapshot.typography.body.fontSize);
 		expect(restore.state.typography.heading.fontSize).toBe(snapshot.typography.heading.fontSize);
+	});
+
+	it("moves rendered overflow sections to a new authored page in one edit", async () => {
+		const onEdit = vi.fn<(edit: ResumeEdit) => void>();
+		const onPdfRendered = vi.fn<(result: ResumePdfRender | null) => void>();
+		const renderPdf = vi.fn(async (data: ResumeData) =>
+			data.metadata.layout.pages.length > 1 ? pdfWithPages(1) : pdfWithSpillingExperience(),
+		);
+		render(
+			<Harness
+				onEdit={onEdit}
+				onPdfRendered={onPdfRendered}
+				renderPdf={renderPdf}
+				loadPdfDocument={async () => pdfDocument()}
+			/>,
+		);
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("tab", { name: /design/i }));
+		expect(await screen.findByText(/runs to 2 pages; 1 authored page/i)).toBeTruthy();
+		expect(screen.getByText(/Add page moves overflow sections/i)).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "Add page" }));
+
+		expect(onEdit).toHaveBeenCalledWith({
+			type: "add-page-with-spill",
+			sections: { main: ["experience"], sidebar: [] },
+		});
+		expect(await screen.findByText(/fits within 2 authored pages/i)).toBeTruthy();
+	});
+
+	it("does not use a stale applied page map to choose spill sections", async () => {
+		const onEdit = vi.fn<(edit: ResumeEdit) => void>();
+		const onPdfRendered = vi.fn<(result: ResumePdfRender | null) => void>();
+		const renderPdf = vi
+			.fn<(data: ResumeData) => Promise<ResumePdfRender>>()
+			.mockResolvedValueOnce(pdfWithSpillingExperience())
+			.mockImplementationOnce(() => new Promise<ResumePdfRender>(() => undefined));
+		render(
+			<Harness
+				onEdit={onEdit}
+				onPdfRendered={onPdfRendered}
+				renderPdf={renderPdf}
+				loadPdfDocument={async () => pdfDocument()}
+			/>,
+		);
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("tab", { name: /design/i }));
+		expect(await screen.findByText(/runs to 2 pages; 1 authored page/i)).toBeTruthy();
+
+		fireEvent.change(screen.getByLabelText("Text size"), { target: { value: "12" } });
+		await waitFor(() =>
+			expect(screen.getByText(/Waiting for the updated preview before moving overflow sections/i)).toBeTruthy(),
+		);
+		await user.click(screen.getByRole("button", { name: "Add blank page" }));
+
+		expect(onEdit.mock.calls.at(-1)?.[0]).toEqual({ type: "add-page" });
+		expect(onEdit.mock.calls.some(([edit]) => edit.type === "add-page-with-spill")).toBe(false);
+	});
+
+	it("does not let a temporary template preview drive spill movement", async () => {
+		const onEdit = vi.fn<(edit: ResumeEdit) => void>();
+		const onPdfRendered = vi.fn<(result: ResumePdfRender | null) => void>();
+		const renderPdf = vi.fn(async () => pdfWithSpillingExperience());
+		render(
+			<Harness
+				onEdit={onEdit}
+				onPdfRendered={onPdfRendered}
+				renderPdf={renderPdf}
+				loadPdfDocument={async () => pdfDocument()}
+			/>,
+		);
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("tab", { name: /design/i }));
+		expect(await screen.findByText(/runs to 2 pages; 1 authored page/i)).toBeTruthy();
+
+		fireEvent.pointerEnter(document.querySelector('[data-template-id="azurill"]') as HTMLElement, {
+			pointerType: "mouse",
+		});
+		expect(await screen.findByText("Previewing Azurill · click to apply")).toBeTruthy();
+		await waitFor(() =>
+			expect(screen.getByText(/Waiting for the updated preview before moving overflow sections/i)).toBeTruthy(),
+		);
+		await user.click(screen.getByRole("button", { name: "Add blank page" }));
+
+		expect(onEdit.mock.calls.at(-1)?.[0]).toEqual({ type: "add-page" });
+		expect(onEdit.mock.calls.some(([edit]) => edit.type === "add-page-with-spill")).toBe(false);
 	});
 });

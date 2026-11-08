@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { EditableSection, ResumeEdit } from "../resume-edits";
+import { writeItemFieldId } from "../write-focus";
 import { ExperienceRoles } from "./experience-roles";
 import { NumberField, TextField } from "./field-controls";
 import { SanitizedRichText } from "./rich-text";
@@ -76,10 +77,8 @@ const changesFor = (item: Record<string, unknown>, field: SectionField, value: s
 	}
 };
 
-const idFor = (section: EditableSection, item: Record<string, unknown>, key: string): string => {
-	const safeId = String(item.id ?? "item").replace(/[^a-zA-Z0-9_-]/g, "-");
-	return `write-${section}-${safeId}-${key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-};
+const idFor = (section: EditableSection, item: Record<string, unknown>, key: string): string =>
+	writeItemFieldId(section, String(item.id ?? "item"), key);
 
 /**
  * Keeps the comma-separated draft exactly as typed while the document stores a clean array.

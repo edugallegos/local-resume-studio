@@ -11,6 +11,7 @@ import { renderResumePdf, type ResumePdfRender } from "./features/export/render-
 import { ResumeLibrary } from "./features/library/resume-library";
 import type { LoadPdfDocument } from "./features/preview/pdf-preview";
 import { editResume, type ResumeEdit } from "./features/write/resume-edits";
+import { writeFieldIdForPageTarget } from "./features/write/write-focus";
 import { editorReducer, initialEditorState } from "./state/editor-state";
 
 type View = "library" | "editor";
@@ -55,6 +56,7 @@ export function App({
 	const [exportingPdf, setExportingPdf] = useState(false);
 	const [exportMessage, setExportMessage] = useState<string | null>(null);
 	const [writeFocus, setWriteFocus] = useState<{ fieldId: string; token: number } | null>(null);
+	const [selectedPreviewTarget, setSelectedPreviewTarget] = useState<PageMapTarget | null>(null);
 	const [resolvingConflict, setResolvingConflict] = useState(false);
 	const focusToken = useRef(0);
 	const conflictRequestId = useRef(0);
@@ -90,6 +92,7 @@ export function App({
 		setSaveMessage(null);
 		setRenderedPdf(null);
 		setExportMessage(null);
+		setSelectedPreviewTarget(null);
 		setActiveTab("write");
 		setView("editor");
 	};
@@ -121,7 +124,19 @@ export function App({
 	};
 
 	const handleShowOnPdf = (target: PageMapTarget): void => {
+		setSelectedPreviewTarget(null);
 		dispatch({ type: "select-issue", target });
+	};
+
+	const handleSelectPreviewTarget = (target: PageMapTarget): void => {
+		dispatch({ type: "select-issue", target: null });
+		setSelectedPreviewTarget(target);
+		if (!state.data) return;
+		const fieldId = writeFieldIdForPageTarget(state.data, target);
+		if (!fieldId) return;
+		focusToken.current += 1;
+		setWriteFocus({ fieldId, token: focusToken.current });
+		setActiveTab("write");
 	};
 
 	const handleSave = async (): Promise<void> => {
@@ -198,6 +213,7 @@ export function App({
 			setSaveMessage(null);
 			setRenderedPdf(null);
 			setExportMessage(null);
+			setSelectedPreviewTarget(null);
 		} catch (error) {
 			if (conflictRequestId.current !== requestId) return;
 			const detail = messageOf(error, "The latest disk version could not be read.");
@@ -241,6 +257,7 @@ export function App({
 		setSaveMessage(null);
 		setRenderedPdf(null);
 		setExportMessage(null);
+		setSelectedPreviewTarget(null);
 		setView("library");
 	};
 
@@ -301,6 +318,8 @@ export function App({
 				selectedIssue={state.selectedIssue}
 				onReviewIssue={handleReviewIssue}
 				onShowOnPdf={handleShowOnPdf}
+				selectedPreviewTarget={selectedPreviewTarget}
+				onSelectPreviewTarget={handleSelectPreviewTarget}
 			/>
 		);
 	}

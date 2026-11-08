@@ -2,6 +2,7 @@ import type { EntryHeader, Page, ResumeData, RoleItem } from "@reactive-resume/s
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import type { Template } from "@reactive-resume/schema/templates";
 import { produce } from "immer";
+import type { SpillingSections } from "../design/spill";
 
 /** Density presets write only the supported gap and line-height paths. */
 export const DENSITY_PRESETS = {
@@ -107,6 +108,7 @@ export type ResumeEdit =
 	| { type: "move-section-to-column"; sectionId: string; column: LayoutColumn }
 	| { type: "move-section-to-slot"; sectionId: string; pageIndex: number; column: LayoutColumn; toIndex?: number }
 	| { type: "add-page" }
+	| { type: "add-page-with-spill"; sections: SpillingSections }
 	| { type: "remove-page"; pageIndex: number }
 	| { type: "set-page-full-width"; pageIndex: number; fullWidth: boolean }
 	| { type: "set-sidebar-width"; width: number }
@@ -568,6 +570,20 @@ export const editResume = (data: ResumeData, edit: ResumeEdit): ResumeData =>
 
 			case "add-page": {
 				draft.metadata.layout.pages.push({ fullWidth: false, main: [], sidebar: [] });
+				return;
+			}
+
+			case "add-page-with-spill": {
+				const pages = draft.metadata.layout.pages;
+				const last = pages.at(-1);
+				if (!last) return;
+
+				// One atomic move: remove only the named sections, then append a page that keeps the
+				// last page's full-width state and any unknown page metadata.
+				const { main, sidebar } = edit.sections;
+				last.main = last.main.filter((sectionId) => !main.includes(sectionId));
+				last.sidebar = last.sidebar.filter((sectionId) => !sidebar.includes(sectionId));
+				pages.push({ ...last, main: [...main], sidebar: [...sidebar] });
 				return;
 			}
 

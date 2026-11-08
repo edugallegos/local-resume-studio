@@ -32,6 +32,7 @@ import {
 import { fieldClass, NumberInput } from "./design-ui";
 import { PageLayout } from "./page-layout";
 import { SECTION_LABELS } from "./section-labels";
+import type { SpillingSections } from "./spill";
 import {
 	templateDisplayName,
 	templateSampleImage,
@@ -68,6 +69,10 @@ export type DesignPanelProps = {
 	thumbnailDependencies?: TemplateThumbnailDependencies;
 	/** Physical pages in the last completed applied PDF render; null until one arrives. */
 	renderedPages?: number | null;
+	/** Sections the current applied render says can move; null when no usable map is available. */
+	spillSections?: SpillingSections | null;
+	/** The applied page map is stale or a temporary template preview is active. */
+	renderStale?: boolean;
 	fitRunning?: boolean;
 	fitMessage?: string | null;
 	onFit?: () => void;
@@ -437,6 +442,8 @@ function ColorGroup({ data, onEdit }: { data: ResumeData; onEdit: (edit: ResumeE
 function PageStatus({
 	data,
 	renderedPages,
+	spillSections,
+	renderStale,
 	fitRunning,
 	fitMessage,
 	onEdit,
@@ -444,6 +451,8 @@ function PageStatus({
 }: {
 	data: ResumeData;
 	renderedPages: number | null;
+	spillSections: SpillingSections | null;
+	renderStale: boolean;
 	fitRunning: boolean;
 	fitMessage: string | null;
 	onEdit: (edit: ResumeEdit) => void;
@@ -451,6 +460,9 @@ function PageStatus({
 }) {
 	const authored = Math.max(1, data.metadata.layout.pages.length);
 	const overflowing = renderedPages !== null && renderedPages > authored;
+	const movable =
+		spillSections !== null && spillSections.main.length + spillSections.sidebar.length > 0;
+	const blankOnly = overflowing && (renderStale || !movable);
 	const label = `${authored} authored ${authored === 1 ? "page" : "pages"}`;
 
 	return (
@@ -468,13 +480,27 @@ function PageStatus({
 						? `Your resume runs to ${renderedPages} pages; ${label}.`
 						: `Fits within ${label}.`}
 				{fitMessage ? <span className="ms-2 font-medium">{fitMessage}</span> : null}
+				{overflowing && renderStale ? (
+					<span className="ms-2">Waiting for the updated preview before moving overflow sections.</span>
+				) : overflowing && movable ? (
+					<span className="ms-2">Add page moves overflow sections to a new page.</span>
+				) : overflowing ? (
+					<span className="ms-2">
+						Automatic movement isn&apos;t available for an indivisible overflow section. Add a blank page
+						instead.
+					</span>
+				) : null}
 			</span>
 			<button
 				type="button"
 				className="rounded-sm border border-line-2 px-2 py-1 text-ink-2 hover:bg-hover"
-				onClick={() => onEdit({ type: "add-page" })}
+				onClick={() =>
+					spillSections && movable
+						? onEdit({ type: "add-page-with-spill", sections: spillSections })
+						: onEdit({ type: "add-page" })
+				}
 			>
-				Add page
+				{blankOnly ? "Add blank page" : "Add page"}
 			</button>
 			<button
 				type="button"
@@ -500,6 +526,8 @@ export function DesignPanel({
 	thumbnailsEnabled = true,
 	thumbnailDependencies,
 	renderedPages = null,
+	spillSections = null,
+	renderStale = false,
 	fitRunning = false,
 	fitMessage = null,
 	onFit,
@@ -880,6 +908,8 @@ export function DesignPanel({
 				<PageStatus
 					data={data}
 					renderedPages={renderedPages}
+					spillSections={spillSections}
+					renderStale={renderStale}
 					fitRunning={fitRunning}
 					fitMessage={fitMessage}
 					onEdit={onEdit}

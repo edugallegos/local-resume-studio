@@ -616,6 +616,183 @@ describe("App Check workflow", () => {
 	});
 });
 
+describe("App PDF selection", () => {
+	it("selects an entry in the applied PDF, highlights it, and focuses its first Write field without saving", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const data = syntheticResume();
+		data.sections.experience.title = "Experience";
+		data.sections.experience.items = [
+			{
+				id: "experience-1",
+				hidden: false,
+				company: "Analytical Engine Works",
+				position: "Programmer",
+				location: "",
+				period: "",
+				dates: { start: null, end: null, present: false },
+				website: { url: "", label: "", inlineLink: false },
+				description: "",
+				roles: [],
+			},
+		];
+		const stored = storedResume(item, data);
+		const save = vi.fn<ResumeApiClient["save"]>(async () => stored);
+		const client = makeClient({ list: vi.fn(async () => [item]), read: vi.fn(async () => stored), save });
+		const renderPdf = vi.fn(async () => ({
+			blob: new Blob(["%PDF-1.7 preview"], { type: "application/pdf" }),
+			pageMap: {
+				pages: [{ width: 595, height: 842 }],
+				nodes: [
+					{ kind: "header" as const, key: "page-1/header", page: 0, x: 20, y: 20, width: 220, height: 40 },
+					{
+						kind: "section" as const,
+						sectionId: "experience",
+						key: "page-1/section-experience",
+						page: 0,
+						x: 20,
+						y: 100,
+						width: 340,
+						height: 180,
+					},
+					{
+						kind: "item" as const,
+						sectionId: "experience",
+						itemId: "experience-1",
+						key: "page-1/section-experience/section-items/item-experience-1",
+						page: 0,
+						x: 24,
+						y: 120,
+						width: 320,
+						height: 70,
+					},
+				],
+			},
+			missingFonts: [],
+			lostCharacters: [],
+		}));
+		const loadPdfDocument = async () => ({
+			numPages: 1,
+			getPage: async () => ({
+				getViewport: () => ({ width: 595, height: 842 }),
+				render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+			}),
+		});
+
+		render(<App client={client} renderPdf={renderPdf} loadPdfDocument={loadPdfDocument} />);
+		await openResume(user);
+
+		const entry = await screen.findByRole("button", {
+			name: "Experience 1: Analytical Engine Works",
+		});
+		await user.click(entry);
+
+		expect(screen.getByRole("tab", { name: /write/i }).getAttribute("aria-selected")).toBe("true");
+		const company = screen.getByLabelText("experience 1: Company") as HTMLInputElement;
+		await waitFor(() => expect(document.activeElement).toBe(company));
+		await waitFor(() =>
+			expect(
+				document.querySelector('[data-page-map-target="item"][data-selected="true"]'),
+			).not.toBeNull(),
+		);
+		expect(save).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
+	});
+
+	it("replaces a Check PDF highlight when an entry is clicked, keeping only the clicked target selected", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const data = syntheticResume();
+		data.basics.name = "";
+		data.sections.experience.title = "Experience";
+		data.sections.experience.items = [
+			{
+				id: "experience-1",
+				hidden: false,
+				company: "Analytical Engine Works",
+				position: "Programmer",
+				location: "",
+				period: "",
+				dates: { start: null, end: null, present: false },
+				website: { url: "", label: "", inlineLink: false },
+				description: "",
+				roles: [],
+			},
+		];
+		const stored = storedResume(item, data);
+		const save = vi.fn<ResumeApiClient["save"]>(async () => stored);
+		const client = makeClient({ list: vi.fn(async () => [item]), read: vi.fn(async () => stored), save });
+		const renderPdf = vi.fn(async () => ({
+			blob: new Blob(["%PDF-1.7 preview"], { type: "application/pdf" }),
+			pageMap: {
+				pages: [{ width: 595, height: 842 }],
+				nodes: [
+					{ kind: "header" as const, key: "page-1/header", page: 0, x: 20, y: 20, width: 220, height: 40 },
+					{
+						kind: "item" as const,
+						sectionId: "experience",
+						itemId: "experience-1",
+						key: "page-1/section-experience/section-items/item-experience-1",
+						page: 0,
+						x: 24,
+						y: 120,
+						width: 320,
+						height: 70,
+					},
+				],
+			},
+			missingFonts: [],
+			lostCharacters: [],
+		}));
+		const loadPdfDocument = async () => ({
+			numPages: 1,
+			getPage: async () => ({
+				getViewport: () => ({ width: 595, height: 842 }),
+				render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+			}),
+		});
+
+		render(<App client={client} renderPdf={renderPdf} loadPdfDocument={loadPdfDocument} />);
+		await openResume(user);
+
+		await user.click(screen.getByRole("tab", { name: /check/i }));
+		expect(await screen.findByTestId("ats-score")).toBeTruthy();
+		const missingName = screen
+			.getByTestId("check-issues")
+			.querySelector('[data-issue-code="MISSING_NAME"]') as HTMLElement;
+		await user.click(
+			within(missingName).getByRole("button", { name: "Show Your name is missing on PDF" }),
+		);
+
+		await screen.findByLabelText("PDF page 1");
+		await waitFor(() =>
+			expect(
+				document.querySelector('[data-page-map-target="header"][data-selected="true"]'),
+			).not.toBeNull(),
+		);
+
+		const entry = await screen.findByRole("button", {
+			name: "Experience 1: Analytical Engine Works",
+		});
+		await user.click(entry);
+
+		expect(screen.getByRole("tab", { name: /write/i }).getAttribute("aria-selected")).toBe("true");
+		const company = screen.getByLabelText("experience 1: Company") as HTMLInputElement;
+		await waitFor(() => expect(document.activeElement).toBe(company));
+		await waitFor(() => {
+			expect(document.querySelectorAll('[data-page-map-target][data-selected="true"]')).toHaveLength(1);
+			expect(
+				document.querySelector('[data-page-map-target="item"][data-selected="true"]'),
+			).not.toBeNull();
+			expect(
+				document.querySelector('[data-page-map-target="header"][data-selected="true"]'),
+			).toBeNull();
+		});
+		expect(save).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
+	});
+});
+
 describe("App PDF export", () => {
 	it("archives and downloads the exact Blob the preview rendered, without saving the draft", async () => {
 		const user = userEvent.setup();

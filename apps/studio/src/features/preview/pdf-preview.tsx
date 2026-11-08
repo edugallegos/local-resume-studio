@@ -6,6 +6,7 @@ import { cn } from "@reactive-resume/utils/style";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createSafeRenderCopy } from "../export/safe-render-copy";
 import { renderResumePdf, type ResumePdfRender } from "../export/render-resume-pdf";
+import { pageTargetLabel } from "../write/write-focus";
 
 export type PdfViewport = { width: number; height: number };
 
@@ -48,14 +49,23 @@ export type PdfPreviewProps = {
 	loadDocument?: LoadPdfDocument;
 	/** A Check issue target to outline on top of the rendered page map. */
 	selectedIssue?: PageMapTarget | null;
+	/** A target selected by clicking the applied preview. */
+	selectedTarget?: PageMapTarget | null;
 	/** Receives the exact render used by the preview, or null when a render fails. */
 	onRendered?: (result: ResumePdfRender | null) => void;
+	/** Associates a completed applied render with the exact draft snapshot that produced it. */
+	onRenderSnapshot?: (snapshot: { result: ResumePdfRender; data: ResumeData } | null) => void;
+	/** Called only for an active, current, applied preview target. */
+	onSelectTarget?: (target: PageMapTarget) => void;
+	/** Temporary template previews, and stale layers, stay non-interactive. */
+	interactive?: boolean;
 };
 
 type PreviewLayer = {
 	id: number;
 	status: "active" | "staged";
 	result: ResumePdfRender;
+	data: ResumeData;
 	document: PdfDocumentLike;
 	renderedPages: number[];
 };
@@ -95,14 +105,32 @@ const matchesTarget = (node: PageMapNode, target: PageMapTarget): boolean => {
 	return false;
 };
 
+const targetOf = (node: PageMapNode): PageMapTarget => {
+	if (node.kind === "header") return { kind: "header" };
+	if (node.kind === "section") return { kind: "section", sectionId: node.sectionId };
+	return { kind: "item", sectionId: node.sectionId, itemId: node.itemId };
+};
+
+const OVERLAY_Z = {
+	header: "z-10",
+	section: "z-20",
+	item: "z-30",
+} as const;
+
 function PageMapOverlay({
 	node,
 	page,
 	selected,
+	label,
+	interactive,
+	onSelect,
 }: {
 	node: PageMapNode;
 	page: { width: number; height: number };
 	selected: boolean;
+	label: string;
+	interactive: boolean;
+	onSelect?: (target: PageMapTarget) => void;
 }) {
 	const style = {
 		left: `${(node.x / page.width) * 100}%`,
@@ -110,19 +138,41 @@ function PageMapOverlay({
 		width: `${(node.width / page.width) * 100}%`,
 		height: `${(node.height / page.height) * 100}%`,
 	};
+	const data = {
+		"data-page-map-target": node.kind,
+		"data-section-id": "sectionId" in node ? node.sectionId : undefined,
+		"data-item-id": "itemId" in node ? node.itemId : undefined,
+		"data-selected": selected ? "true" : undefined,
+	};
+
+	if (!interactive) {
+		return (
+			<div
+				aria-hidden="true"
+				{...data}
+				className={cn(
+					"pointer-events-none absolute border",
+					selected ? "border-2 border-warn bg-warn/15" : "border-accent/40 bg-accent/5",
+					OVERLAY_Z[node.kind],
+				)}
+				style={style}
+			/>
+		);
+	}
 
 	return (
-		<div
-			aria-hidden="true"
-			data-page-map-target={node.kind}
-			data-section-id={"sectionId" in node ? node.sectionId : undefined}
-			data-item-id={"itemId" in node ? node.itemId : undefined}
-			data-selected={selected ? "true" : undefined}
-			className={
-				selected
-					? "pointer-events-none absolute z-10 border-2 border-warn bg-warn/15"
-					: "pointer-events-none absolute border border-accent/40 bg-accent/5"
-			}
+		<button
+			type="button"
+			aria-label={label}
+			title={label}
+			{...data}
+			onClick={() => onSelect?.(targetOf(node))}
+			className={cn(
+				"absolute cursor-pointer border bg-transparent p-0 text-start transition-colors",
+				"hover:bg-accent/15 focus-visible:bg-accent/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+				selected ? "border-2 border-warn bg-warn/15" : "border-accent/40 hover:border-accent",
+				OVERLAY_Z[node.kind],
+			)}
 			style={style}
 		/>
 	);
@@ -132,7 +182,11 @@ function PdfPage({
 	document,
 	pageNumber,
 	pageMap,
+	data,
 	selectedIssue,
+	selectedTarget,
+	interactive,
+	onSelectTarget,
 	layerId,
 	onRendered,
 	onFailed,
@@ -140,7 +194,11 @@ function PdfPage({
 	document: PdfDocumentLike;
 	pageNumber: number;
 	pageMap: PageMap;
+	data: ResumeData;
 	selectedIssue: PageMapTarget | null;
+	selectedTarget: PageMapTarget | null;
+	interactive: boolean;
+	onSelectTarget?: ((target: PageMapTarget) => void) | undefined;
 	layerId: number;
 	onRendered?: (layerId: number, pageNumber: number) => void;
 	onFailed?: (layerId: number, pageNumber: number, message: string) => void;
@@ -150,12 +208,11 @@ function PdfPage({
 	const onFailedRef = useRef(onFailed);
 	const [pageError, setPageError] = useState<string | null>(null);
 	const pageSize = pageMap.pages[pageNumber - 1];
-	// The PDF is the default view; only an explicitly selected Check issue gets a diagnostic overlay.
-	const selectedNodes = selectedIssue
-		? pageMap.nodes.filter(
-				(node) => node.page === pageNumber - 1 && matchesTarget(node, selectedIssue),
-			)
-		: [];
+	const pageNodes = pageSize ? pageMap.nodes.filter((node) => node.page === pageNumber - 1) : [];
+	// An interactive applied preview exposes every region. Otherwise only a selected Check issue is outlined.
+	const visibleNodes = interactive
+		? pageNodes
+		: pageNodes.filter((node) => (selectedIssue ? matchesTarget(node, selectedIssue) : false));
 
 	useEffect(() => {
 		onRenderedRef.current = onRendered;
@@ -214,19 +271,21 @@ function PdfPage({
 
 	return (
 		<div className="flex flex-col gap-2">
-			<div
-				role="img"
-				aria-label={`PDF page ${pageNumber}`}
-				className="relative w-full overflow-hidden bg-white shadow-e1"
-			>
-				<canvas ref={canvasRef} className="block h-auto w-full" />
+			<div className="relative w-full overflow-hidden bg-white shadow-e1">
+				<canvas ref={canvasRef} role="img" aria-label={`PDF page ${pageNumber}`} className="block h-auto w-full" />
 				{pageSize
-					? selectedNodes.map((node) => (
+					? visibleNodes.map((node) => (
 							<PageMapOverlay
 								key={`${node.key}:${node.page}`}
 								node={node}
 								page={pageSize}
-								selected
+								selected={
+									(selectedIssue ? matchesTarget(node, selectedIssue) : false) ||
+									(selectedTarget ? matchesTarget(node, selectedTarget) : false)
+								}
+								label={pageTargetLabel(data, targetOf(node))}
+								interactive={interactive}
+								onSelect={onSelectTarget}
 							/>
 						))
 					: null}
@@ -251,7 +310,11 @@ export function PdfPreview({
 	renderPdf = renderResumePdf,
 	loadDocument = loadPdfDocument,
 	selectedIssue = null,
+	selectedTarget = null,
 	onRendered,
+	onRenderSnapshot,
+	onSelectTarget,
+	interactive = true,
 }: PdfPreviewProps) {
 	const [layers, setLayers] = useState<PreviewLayer[]>([]);
 	const [rendering, setRendering] = useState(false);
@@ -260,6 +323,7 @@ export function PdfPreview({
 	const layersRef = useRef<PreviewLayer[]>([]);
 	const nextLayerId = useRef(0);
 	const onRenderedRef = useRef(onRendered);
+	const onRenderSnapshotRef = useRef(onRenderSnapshot);
 	const safetyWarnings = useMemo(() => createSafeRenderCopy(data).warnings, [data]);
 
 	const commitLayers = useCallback((next: PreviewLayer[]) => {
@@ -269,7 +333,8 @@ export function PdfPreview({
 
 	useEffect(() => {
 		onRenderedRef.current = onRendered;
-	}, [onRendered]);
+		onRenderSnapshotRef.current = onRenderSnapshot;
+	}, [onRendered, onRenderSnapshot]);
 
 	const handlePageFailed = useCallback(
 		(layerId: number, pageNumber: number, message: string) => {
@@ -315,6 +380,7 @@ export function PdfPreview({
 			setRendering(false);
 			setError(null);
 			onRenderedRef.current?.(layer.result);
+			onRenderSnapshotRef.current?.({ result: layer.result, data: layer.data });
 		},
 		[commitLayers],
 	);
@@ -335,7 +401,10 @@ export function PdfPreview({
 
 		setRendering(true);
 		setError(null);
-		if (activeOnly.length === 0) onRenderedRef.current?.(null);
+		if (activeOnly.length === 0) {
+			onRenderedRef.current?.(null);
+			onRenderSnapshotRef.current?.(null);
+		}
 
 		void (async () => {
 			try {
@@ -358,6 +427,7 @@ export function PdfPreview({
 					id: nextLayerId.current++,
 					status: "staged",
 					result,
+					data,
 					document,
 					renderedPages: [],
 				};
@@ -372,7 +442,10 @@ export function PdfPreview({
 					if (stale.status === "staged") destroyPdfDocument(stale.document);
 				}
 				if (active.length !== current.length) commitLayers(active);
-				if (active.length === 0) onRenderedRef.current?.(null);
+				if (active.length === 0) {
+					onRenderedRef.current?.(null);
+					onRenderSnapshotRef.current?.(null);
+				}
 			}
 		})();
 
@@ -500,7 +573,15 @@ export function PdfPreview({
 										document={layer.document}
 										pageNumber={pageNumber}
 										pageMap={layer.result.pageMap}
+										data={layer.data}
 										selectedIssue={layer.status === "active" ? selectedIssue : null}
+										selectedTarget={
+											layer.status === "active" && layer.data === data ? selectedTarget : null
+										}
+										interactive={
+											layer.status === "active" && layer.data === data && interactive
+										}
+										onSelectTarget={onSelectTarget}
 										layerId={layer.id}
 										onRendered={handlePageRendered}
 										onFailed={handlePageFailed}
