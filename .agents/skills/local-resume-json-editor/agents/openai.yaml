@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Resume JSON Editor"
+  short_description: "Edit CV JSON and preview it locally"
+  default_prompt: "Use $local-resume-json-editor to update my selected local CV JSON file and check its PDF preview."

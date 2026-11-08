@@ -122,6 +122,21 @@ directly. Use `AGENTS.md` as the operating contract: preserve unknown fields and
 the standard v6.1.0 shape, avoid committing personal data, and validate after
 editing.
 
+This repository includes the `local-resume-json-editor` skill in
+`.agents/skills/local-resume-json-editor/`. When you open this repository in
+Codex, start a new session and invoke it with `$local-resume-json-editor` to
+edit the selected JSON directly and use the app only for a read-only PDF
+preview. Codex discovers project skills from `.agents/skills/`; a user-level
+installation can be made from the public GitHub repository with:
+
+```bash
+gh skill install <owner>/<repository> local-resume-json-editor --agent codex --scope user
+```
+
+The user-level install makes the skill available across projects. See the
+[Codex skill installation guide](https://developers.openai.com/api/reference/cli#use-the-cli-from-a-coding-agent)
+for local-checkout and other agent options.
+
 Typical loop:
 
 ```bash
