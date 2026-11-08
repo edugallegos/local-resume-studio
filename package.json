@@ -12,6 +12,7 @@
 		"build": "vite build --config apps/studio/vite.config.ts",
 		"dev": "node scripts/dev.mjs",
 		"e2e": "node scripts/e2e.mjs",
+		"e2e:production": "node scripts/e2e-production.mjs",
 		"lint": "biome check .",
 		"resume:list": "node --import tsx scripts/resume.mjs list",
 		"resume:validate": "node --import tsx scripts/resume.mjs validate",

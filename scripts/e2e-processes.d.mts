@@ -22,6 +22,11 @@ export function windowsTreeKillCommand(pid: number): {
 	args: [string, string, string, string];
 };
 
+export function pnpmStartCommand(options?: {
+	platform?: NodeJS.Platform;
+	comSpec?: string | undefined;
+}): { command: string; args: string[] };
+
 export function killWindowsProcessTree(
 	pid: number,
 	options?: { spawnImpl?: WindowsTreeKillSpawn; timeoutMs?: number; graceTimeoutMs?: number },

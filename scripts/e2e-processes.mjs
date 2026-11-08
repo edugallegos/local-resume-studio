@@ -5,6 +5,17 @@ export const windowsTreeKillCommand = (pid) => ({
 	args: ["/PID", String(pid), "/T", "/F"],
 });
 
+/** Launch `pnpm start` without a shell on POSIX, and through fixed cmd.exe arguments on Windows. */
+export const pnpmStartCommand = ({ platform = process.platform, comSpec = process.env.ComSpec } = {}) => {
+	if (platform === "win32") {
+		return {
+			command: comSpec?.trim() || "cmd.exe",
+			args: ["/d", "/s", "/c", "pnpm start"],
+		};
+	}
+	return { command: "pnpm", args: ["start"] };
+};
+
 const windowsStops = new WeakMap();
 
 const hasExited = (child) => !child || child.exitCode !== null || child.signalCode !== null;
