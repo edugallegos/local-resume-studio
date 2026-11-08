@@ -11,6 +11,7 @@
 	"scripts": {
 		"build": "vite build --config apps/studio/vite.config.ts",
 		"dev": "node scripts/dev.mjs",
+		"e2e": "node scripts/e2e.mjs",
 		"lint": "biome check .",
 		"start": "node --import tsx apps/studio/server/index.ts",
 		"test": "vitest run",
@@ -19,6 +20,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "2.6.6",
 		"@local-resume/store": "workspace:*",
+		"@playwright/test": "1.65.0",
 		"@reactive-resume/fonts": "workspace:*",
 		"@reactive-resume/pdf": "workspace:*",
 		"@reactive-resume/resume": "workspace:*",

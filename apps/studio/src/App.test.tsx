@@ -307,6 +307,255 @@ describe("App dirty draft navigation", () => {
 	});
 });
 
+describe("App conflict resolution", () => {
+	const conflictingSave = () =>
+		vi.fn<ResumeApiClient["save"]>(async () => {
+			throw new ResumeApiError("The resume changed on disk since it was read.", 409, "CONFLICT");
+		});
+
+	it("shows the latest disk timestamp and replaces the draft only after Reload from disk", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const base = storedResume(item);
+		const latest = storedResume(item, syntheticResume("Disk Latest"), "etag-disk");
+		const read = vi.fn<ResumeApiClient["read"]>().mockResolvedValueOnce(base).mockResolvedValue(latest);
+		const save = conflictingSave();
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save });
+
+		render(<App client={client} renderPdf={neverRenderPdf} />);
+		await openResume(user);
+		await user.clear(screen.getByLabelText("Full name"));
+		await user.type(screen.getByLabelText("Full name"), "Ada Conflict");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+		const alert = await screen.findByRole("alert");
+		await waitFor(() => expect(alert.textContent).toMatch(/Latest disk version updated/i));
+		expect(alert.textContent).toMatch(/changed on disk/i);
+		expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Ada Conflict");
+		expect(save).toHaveBeenCalledTimes(1);
+
+		await user.click(screen.getByRole("button", { name: "Reload from disk" }));
+		await waitFor(() => expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Disk Latest"));
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(read).toHaveBeenCalledTimes(3);
+	});
+
+	it("keeps the draft on Keep editing, never retries automatically, and keeps the old ETag", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const base = storedResume(item);
+		const latest = storedResume(item, syntheticResume("Disk Latest"), "etag-disk");
+		const read = vi.fn<ResumeApiClient["read"]>().mockResolvedValueOnce(base).mockResolvedValue(latest);
+		const save = conflictingSave();
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save });
+
+		render(<App client={client} renderPdf={neverRenderPdf} />);
+		await openResume(user);
+		await user.clear(screen.getByLabelText("Full name"));
+		await user.type(screen.getByLabelText("Full name"), "Ada Keep");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+		await screen.findByRole("alert");
+		expect(save).toHaveBeenCalledTimes(1);
+
+		await user.click(screen.getByRole("button", { name: "Keep editing" }));
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Ada Keep");
+		expect(save).toHaveBeenCalledTimes(1);
+
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+		expect(save.mock.calls[0]?.[2]).toBe("etag-1");
+		expect(save.mock.calls[1]?.[2]).toBe("etag-1");
+		await screen.findByRole("alert");
+		expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Ada Keep");
+	});
+
+	it("lets pending conflict metadata settle after an edit without replacing the draft or advancing the ETag", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const base = storedResume(item);
+		const latest = storedResume(item, syntheticResume("Disk Pending"), "etag-disk");
+		let resolveDetails: (resume: StoredResume) => void = () => undefined;
+		const pendingDetails = new Promise<StoredResume>((resolve) => {
+			resolveDetails = resolve;
+		});
+		const read = vi
+			.fn<ResumeApiClient["read"]>()
+			.mockResolvedValueOnce(base)
+			.mockImplementationOnce(() => pendingDetails);
+		let saveCalls = 0;
+		const save = vi.fn<ResumeApiClient["save"]>(async (_id, data) => {
+			saveCalls += 1;
+			if (saveCalls === 1) {
+				throw new ResumeApiError("The resume changed on disk since it was read.", 409, "CONFLICT");
+			}
+			return { ...base, data, etag: "etag-2", updatedAt: "2026-03-04T05:06:07.000Z" };
+		});
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save });
+
+		render(<App client={client} renderPdf={neverRenderPdf} />);
+		await openResume(user);
+		const name = screen.getByLabelText("Full name");
+		await user.clear(name);
+		await user.type(name, "Ada Conflict");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+		const alert = await screen.findByRole("alert");
+		await waitFor(() => expect(alert.textContent).toMatch(/Checking the latest disk version/i));
+
+		await user.clear(name);
+		await user.type(name, "Ada Edited While Pending");
+		expect(name).toHaveProperty("value", "Ada Edited While Pending");
+
+		await act(async () => {
+			resolveDetails(latest);
+			await pendingDetails;
+		});
+
+		await waitFor(() => expect(alert.textContent).toMatch(/Latest disk version updated/i));
+		expect(alert.textContent).not.toMatch(/Checking the latest disk version/i);
+		expect(name).toHaveProperty("value", "Ada Edited While Pending");
+
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+		expect(save.mock.calls[1]?.[1]?.basics.name).toBe("Ada Edited While Pending");
+		expect(save.mock.calls[1]?.[2]).toBe("etag-1");
+	});
+
+	it("clears stale conflict loading when an edit cancels a pending reload", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const base = storedResume(item);
+		const reloaded = storedResume(item, syntheticResume("Reloaded Too Late"), "etag-reload");
+		let resolveReload: (resume: StoredResume) => void = () => undefined;
+		const pendingReload = new Promise<StoredResume>((resolve) => {
+			resolveReload = resolve;
+		});
+		let rejectDetails: (error: Error) => void = () => undefined;
+		const pendingDetails = new Promise<StoredResume>((_resolve, reject) => {
+			rejectDetails = reject;
+		});
+		const read = vi
+			.fn<ResumeApiClient["read"]>()
+			.mockResolvedValueOnce(base)
+			.mockImplementationOnce(() => pendingDetails)
+			.mockImplementationOnce(() => pendingReload);
+		const save = conflictingSave();
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save });
+
+		render(<App client={client} renderPdf={neverRenderPdf} />);
+		await openResume(user);
+		const name = screen.getByLabelText("Full name");
+		await user.clear(name);
+		await user.type(name, "Ada Cancels Reload");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+		const alert = await screen.findByRole("alert");
+		await waitFor(() => expect(alert.textContent).toMatch(/Checking the latest disk version/i));
+
+		const reload = screen.getByRole("button", { name: "Reload from disk" });
+		await user.click(reload);
+		await waitFor(() => expect(reload).toHaveProperty("disabled", true));
+
+		await user.clear(name);
+		await user.type(name, "Ada Newer Draft");
+		await waitFor(() => expect(alert.textContent).not.toMatch(/Checking the latest disk version/i));
+		expect(reload).toHaveProperty("disabled", false);
+		expect(name).toHaveProperty("value", "Ada Newer Draft");
+
+		await act(async () => {
+			resolveReload(reloaded);
+			await pendingReload;
+		});
+
+		expect(name).toHaveProperty("value", "Ada Newer Draft");
+		expect(alert.textContent).not.toMatch(/Checking the latest disk version/i);
+
+		await act(async () => {
+			rejectDetails(new Error("stale metadata failure"));
+			await pendingDetails.catch(() => undefined);
+		});
+
+		expect(name).toHaveProperty("value", "Ada Newer Draft");
+		expect(alert.textContent).not.toMatch(/Checking the latest disk version/i);
+		expect(save).toHaveBeenCalledTimes(1);
+	});
+
+	it("ignores a stale conflict-details error after an explicit reload succeeds", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const base = storedResume(item);
+		const reloaded = storedResume(item, syntheticResume("Reloaded From Disk"), "etag-reload");
+		let rejectDetails: (error: Error) => void = () => undefined;
+		const pendingDetails = new Promise<StoredResume>((_resolve, reject) => {
+			rejectDetails = reject;
+		});
+		const read = vi
+			.fn<ResumeApiClient["read"]>()
+			.mockResolvedValueOnce(base)
+			.mockImplementationOnce(() => pendingDetails)
+			.mockResolvedValueOnce(reloaded);
+		const save = conflictingSave();
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save });
+
+		render(<App client={client} renderPdf={neverRenderPdf} />);
+		await openResume(user);
+		const name = screen.getByLabelText("Full name");
+		await user.clear(name);
+		await user.type(name, "Ada Conflict");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+		const alert = await screen.findByRole("alert");
+		await waitFor(() => expect(alert.textContent).toMatch(/Checking the latest disk version/i));
+
+		await user.click(screen.getByRole("button", { name: "Reload from disk" }));
+		await waitFor(() => expect(name).toHaveProperty("value", "Reloaded From Disk"));
+		expect(screen.queryByRole("alert")).toBeNull();
+
+		await act(async () => {
+			rejectDetails(new Error("stale details failure"));
+			await pendingDetails.catch(() => undefined);
+		});
+
+		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+		expect(name).toHaveProperty("value", "Reloaded From Disk");
+		expect(save).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the draft and conflict visible when the disk details cannot be read", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const base = storedResume(item);
+		const notFound = new ResumeApiError("The requested resume was not found.", 404, "NOT_FOUND");
+		const read = vi
+			.fn<ResumeApiClient["read"]>()
+			.mockResolvedValueOnce(base)
+			.mockRejectedValue(notFound);
+		const save = conflictingSave();
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save });
+
+		render(<App client={client} renderPdf={neverRenderPdf} />);
+		await openResume(user);
+		await user.clear(screen.getByLabelText("Full name"));
+		await user.type(screen.getByLabelText("Full name"), "Ada Read Failure");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+		const alert = await screen.findByRole("alert");
+		await waitFor(() => expect(alert.textContent).toMatch(/could not be read/i));
+		expect(alert.textContent).toMatch(/not found/i);
+		expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Ada Read Failure");
+		expect(screen.getByRole("button", { name: "Reload from disk" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Keep editing" })).toBeTruthy();
+		expect(save).toHaveBeenCalledTimes(1);
+
+		await user.click(screen.getByRole("button", { name: "Reload from disk" }));
+		await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/Reload from disk failed/i));
+		expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Ada Read Failure");
+		expect(save).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("App Check workflow", () => {
 	it("reviews an issue in Write and highlights the selected target on the PDF preview", async () => {
 		const user = userEvent.setup();

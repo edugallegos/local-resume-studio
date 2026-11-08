@@ -27,7 +27,10 @@ export type AppProps = {
 };
 
 const conflictMessage =
-	"This file changed on disk since you opened it. Your unsaved draft and its original ETag are still here and were not overwritten. Return to the library and save or resolve the conflict before switching files.";
+	"This file changed on disk since you opened it. Your unsaved draft and its original ETag are still here and were not overwritten. Choose Reload from disk or Keep editing; nothing is retried automatically.";
+
+const messageOf = (error: unknown, fallback: string): string =>
+	error instanceof Error && error.message.trim() !== "" ? error.message : fallback;
 
 const saveFailureMessage = (error: unknown): string => {
 	const detail =
@@ -52,7 +55,10 @@ export function App({
 	const [exportingPdf, setExportingPdf] = useState(false);
 	const [exportMessage, setExportMessage] = useState<string | null>(null);
 	const [writeFocus, setWriteFocus] = useState<{ fieldId: string; token: number } | null>(null);
+	const [resolvingConflict, setResolvingConflict] = useState(false);
 	const focusToken = useRef(0);
+	const conflictRequestId = useRef(0);
+	const conflictDetailsRequestId = useRef(0);
 
 	useEffect(() => {
 		if (activeTab !== "write" || !writeFocus) return;
@@ -71,6 +77,9 @@ export function App({
 		}
 		if (state.dirty && state.selectedId !== resume.id) return;
 
+		conflictRequestId.current += 1;
+		conflictDetailsRequestId.current += 1;
+		setResolvingConflict(false);
 		dispatch({
 			type: "load",
 			selectedId: resume.id,
@@ -87,6 +96,17 @@ export function App({
 
 	const handleEdit = (edit: ResumeEdit): void => {
 		if (!state.data) return;
+		conflictRequestId.current += 1;
+		if (resolvingConflict) {
+			// Editing cancels the explicit reload; settle its invalidated details read so the
+			// conflict banner cannot stay stuck on "Checking the latest disk version…".
+			setResolvingConflict(false);
+			dispatch({
+				type: "conflict-details",
+				latestUpdatedAt: state.conflict?.latestUpdatedAt ?? null,
+				error: null,
+			});
+		}
 		// The preview is recomputed from the new draft; never let an older Blob be downloaded as current.
 		setRenderedPdf(null);
 		setExportMessage(null);
@@ -110,6 +130,8 @@ export function App({
 		const id = state.selectedId;
 		const etag = state.etag;
 		const draft = state.data;
+		conflictRequestId.current += 1;
+		conflictDetailsRequestId.current += 1;
 
 		setSaveMessage(null);
 		dispatch({ type: "save-start" });
@@ -125,15 +147,70 @@ export function App({
 			setSelectedResume(saved);
 		} catch (error) {
 			if (isResumeConflictError(error)) {
-				// Keep the draft, selection, and ETag exactly as they were.
+				// Keep the draft, selection, and ETag exactly as they were. Read the disk details
+				// separately only to show what changed; this response never replaces the draft.
 				dispatch({ type: "save-conflict" });
 				setSaveMessage(conflictMessage);
+				conflictDetailsRequestId.current += 1;
+				const detailsRequestId = conflictDetailsRequestId.current;
+
+				try {
+					const latest = await client.read(id);
+					if (conflictDetailsRequestId.current !== detailsRequestId) return;
+					dispatch({ type: "conflict-details", latestUpdatedAt: latest.updatedAt });
+				} catch (readError) {
+					if (conflictDetailsRequestId.current !== detailsRequestId) return;
+					const detail = messageOf(readError, "The latest disk version could not be read.");
+					dispatch({ type: "conflict-details", error: detail });
+					setSaveMessage(`${conflictMessage} The latest disk version could not be read: ${detail}`);
+				}
 				return;
 			}
 
 			// Every other failure keeps the same draft and dirty state so nothing disappears.
 			dispatch({ type: "save-error" });
 			setSaveMessage(saveFailureMessage(error));
+		}
+	};
+
+	const handleKeepEditing = (): void => {
+		conflictRequestId.current += 1;
+		conflictDetailsRequestId.current += 1;
+		setResolvingConflict(false);
+		dispatch({ type: "keep-editing" });
+		setSaveMessage(null);
+	};
+
+	const handleReloadFromDisk = async (): Promise<void> => {
+		if (!state.selectedId || resolvingConflict) return;
+
+		const id = state.selectedId;
+		conflictRequestId.current += 1;
+		conflictDetailsRequestId.current += 1;
+		const requestId = conflictRequestId.current;
+		setResolvingConflict(true);
+
+		try {
+			const latest = await client.read(id);
+			if (conflictRequestId.current !== requestId) return;
+			setSelectedResume(latest);
+			dispatch({ type: "load", selectedId: id, data: latest.data, etag: latest.etag });
+			setSaveMessage(null);
+			setRenderedPdf(null);
+			setExportMessage(null);
+		} catch (error) {
+			if (conflictRequestId.current !== requestId) return;
+			const detail = messageOf(error, "The latest disk version could not be read.");
+			// The pending details read was invalidated when the explicit reload began; settle its
+			// loading state so a failed reload cannot leave the conflict alert spinning forever.
+			dispatch({
+				type: "conflict-details",
+				latestUpdatedAt: state.conflict?.latestUpdatedAt ?? null,
+				error: detail,
+			});
+			setSaveMessage(`Reload from disk failed: ${detail} Your draft and the conflict are still here.`);
+		} finally {
+			if (conflictRequestId.current === requestId) setResolvingConflict(false);
 		}
 	};
 
@@ -156,6 +233,9 @@ export function App({
 		if (state.selectedId !== id) return;
 		// A dirty draft is never deleted out from under the editor.
 		if (state.dirty) return;
+		conflictRequestId.current += 1;
+		conflictDetailsRequestId.current += 1;
+		setResolvingConflict(false);
 		dispatch({ type: "reset" });
 		setSelectedResume(null);
 		setSaveMessage(null);
@@ -207,6 +287,9 @@ export function App({
 					setSaveMessage(null);
 					dispatch({ type: "clear-error" });
 				}}
+				onReloadFromDisk={() => void handleReloadFromDisk()}
+				onKeepEditing={handleKeepEditing}
+				resolvingConflict={resolvingConflict}
 				renderPdf={renderPdf}
 				loadPdfDocument={loadPdfDocument}
 				onPdfRendered={setRenderedPdf}

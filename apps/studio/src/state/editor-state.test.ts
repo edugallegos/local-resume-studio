@@ -20,6 +20,7 @@ const loadedState = (): EditorState => ({
 	dirty: false,
 	status: "saved",
 	selectedIssue: null,
+	conflict: null,
 });
 
 describe("editorReducer", () => {
@@ -31,6 +32,7 @@ describe("editorReducer", () => {
 			dirty: false,
 			status: "idle",
 			selectedIssue: null,
+			conflict: null,
 		});
 	});
 
@@ -50,6 +52,7 @@ describe("editorReducer", () => {
 			dirty: false,
 			status: "saved",
 			selectedIssue: null,
+			conflict: null,
 		});
 	});
 
@@ -170,6 +173,33 @@ describe("editorReducer", () => {
 
 		const edited = editorReducer(selected, { type: "edit", data: syntheticResume("Ada Draft") });
 		expect(edited.selectedIssue).toBeNull();
+	});
+
+	it("keeps the draft through conflict details and clears conflict state when editing resumes", () => {
+		const draft = syntheticResume("Ada Conflict");
+		const conflicted = editorReducer(
+			{ ...loadedState(), data: draft, dirty: true, status: "idle" },
+			{ type: "save-conflict" },
+		);
+		expect(conflicted.status).toBe("conflict");
+		expect(conflicted.data).toBe(draft);
+
+		const detailed = editorReducer(conflicted, {
+			type: "conflict-details",
+			latestUpdatedAt: "2026-02-03T04:05:06.000Z",
+		});
+		expect(detailed.conflict).toEqual({
+			loading: false,
+			latestUpdatedAt: "2026-02-03T04:05:06.000Z",
+			error: null,
+		});
+		expect(detailed.data).toBe(draft);
+
+		const kept = editorReducer(detailed, { type: "keep-editing" });
+		expect(kept.status).toBe("idle");
+		expect(kept.conflict).toBeNull();
+		expect(kept.data).toBe(draft);
+		expect(kept.etag).toBe("etag-1");
 	});
 
 	it("keeps the exact draft, ETag, and dirty flag after a non-conflict save error", () => {

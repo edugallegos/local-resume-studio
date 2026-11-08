@@ -3,6 +3,13 @@ import type { ResumeData } from "@reactive-resume/schema/resume/data";
 
 export type EditorStatus = "idle" | "loading" | "saving" | "saved" | "conflict" | "error";
 
+/** Latest disk details fetched separately after a 409. The draft itself is never replaced here. */
+export type ConflictState = {
+	loading: boolean;
+	latestUpdatedAt: string | null;
+	error: string | null;
+};
+
 /** The single source of truth for the open resume, its ETag, and unsaved-draft state. */
 export type EditorState = {
 	selectedId: string | null;
@@ -12,6 +19,7 @@ export type EditorState = {
 	status: EditorStatus;
 	/** The Check issue target currently highlighted on the PDF preview, if any. */
 	selectedIssue: PageMapTarget | null;
+	conflict: ConflictState | null;
 };
 
 export type EditorAction =
@@ -20,6 +28,8 @@ export type EditorAction =
 	| { type: "save-start" }
 	| { type: "save-success"; data: ResumeData; etag: string; submittedData?: ResumeData }
 	| { type: "save-conflict" }
+	| { type: "conflict-details"; latestUpdatedAt?: string | null; error?: string | null }
+	| { type: "keep-editing" }
 	| { type: "save-error" }
 	| { type: "clear-error" }
 	| { type: "load-error" }
@@ -33,6 +43,7 @@ export const initialEditorState: EditorState = {
 	dirty: false,
 	status: "idle",
 	selectedIssue: null,
+	conflict: null,
 };
 
 /**
@@ -51,6 +62,7 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 				dirty: false,
 				status: "saved",
 				selectedIssue: null,
+				conflict: null,
 			};
 
 		case "edit":
@@ -67,7 +79,7 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 			return { ...state, selectedIssue: action.target };
 
 		case "save-start":
-			return { ...state, status: "saving" };
+			return { ...state, status: "saving", conflict: null };
 
 		case "save-success": {
 			const editedDuringSave =
@@ -76,7 +88,7 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 			if (editedDuringSave) {
 				// The response is for an older snapshot. Keep the newer draft and make it saveable
 				// against the ETag the successful write just produced.
-				return { ...state, etag: action.etag, dirty: true, status: "idle" };
+				return { ...state, etag: action.etag, dirty: true, status: "idle", conflict: null };
 			}
 
 			return {
@@ -85,14 +97,34 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 				etag: action.etag,
 				dirty: false,
 				status: "saved",
+				conflict: null,
 			};
 		}
 
 		case "save-conflict":
-			return { ...state, dirty: true, status: "conflict" };
+			return {
+				...state,
+				dirty: true,
+				status: "conflict",
+				conflict: { loading: true, latestUpdatedAt: null, error: null },
+			};
+
+		case "conflict-details":
+			if (state.status !== "conflict") return state;
+			return {
+				...state,
+				conflict: {
+					loading: false,
+					latestUpdatedAt: action.latestUpdatedAt ?? null,
+					error: action.error ?? null,
+				},
+			};
+
+		case "keep-editing":
+			return state.status === "conflict" ? { ...state, status: "idle", conflict: null } : state;
 
 		case "save-error":
-			return { ...state, status: "error" };
+			return { ...state, status: "error", conflict: null };
 
 		case "clear-error":
 			return state.status === "error" ? { ...state, status: state.dirty ? "idle" : "saved" } : state;

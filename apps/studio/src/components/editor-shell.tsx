@@ -43,6 +43,9 @@ export type EditorShellProps = {
 	selectedIssue?: PageMapTarget | null;
 	onReviewIssue: (issue: CheckIssue) => void;
 	onShowOnPdf: (target: PageMapTarget) => void;
+	onReloadFromDisk?: () => void;
+	onKeepEditing?: () => void;
+	resolvingConflict?: boolean;
 };
 
 type TabDefinition = {
@@ -78,6 +81,9 @@ const tabs: TabDefinition[] = [
 		items: ["Live score & issues", "Pasted job description", "Exported PDF analysis"],
 	},
 ];
+
+const conflictFallback =
+	"This file changed on disk since you opened it. Your unsaved draft and its original ETag are still here.";
 
 const formatUpdatedAt = (value: string | undefined): string | null => {
 	if (!value) return null;
@@ -174,6 +180,9 @@ export function EditorShell({
 	selectedIssue = null,
 	onReviewIssue,
 	onShowOnPdf,
+	onReloadFromDisk,
+	onKeepEditing,
+	resolvingConflict = false,
 }: EditorShellProps) {
 	const canSave = Boolean(
 		state.data && state.selectedId && state.etag && state.dirty && state.status !== "saving",
@@ -221,15 +230,54 @@ export function EditorShell({
 					</Button>
 				</div>
 
-				{saveMessage ? (
+				{state.status === "conflict" ? (
 					<div
 						role="alert"
-						className={cn(
-							"mx-auto flex w-full max-w-[1600px] items-start gap-3 border-t px-4 py-2.5 text-sm sm:px-6",
-							state.status === "conflict"
-								? "border-warn bg-warn-soft text-warn-text"
-								: "border-danger bg-danger-soft text-danger-text",
-						)}
+						className="mx-auto flex w-full max-w-[1600px] items-start gap-3 border-t border-warn bg-warn-soft px-4 py-2.5 text-sm text-warn-text sm:px-6"
+					>
+						<Icon name="warning-circle" className="mt-0.5 shrink-0" />
+						<div className="flex flex-1 flex-col gap-2">
+							<p className="leading-5">{saveMessage ?? conflictFallback}</p>
+							{state.conflict?.loading ? <p className="text-xs">Checking the latest disk version…</p> : null}
+							{state.conflict?.latestUpdatedAt ? (
+								<p className="text-xs">
+									Latest disk version updated{" "}
+									<time dateTime={state.conflict.latestUpdatedAt}>
+										{formatUpdatedAt(state.conflict.latestUpdatedAt)}
+									</time>
+									.
+								</p>
+							) : null}
+							{state.conflict?.error ? (
+								<p className="text-xs text-danger-text">
+									Could not read the latest disk version: {state.conflict.error}
+								</p>
+							) : null}
+							<div className="flex flex-wrap gap-2">
+								{onReloadFromDisk ? (
+									<Button
+										size="sm"
+										variant="secondary"
+										onClick={onReloadFromDisk}
+										disabled={resolvingConflict}
+										loading={resolvingConflict}
+										aria-label="Reload from disk"
+									>
+										Reload from disk
+									</Button>
+								) : null}
+								{onKeepEditing ? (
+									<Button size="sm" variant="ghost" onClick={onKeepEditing} aria-label="Keep editing">
+										Keep editing
+									</Button>
+								) : null}
+							</div>
+						</div>
+					</div>
+				) : saveMessage ? (
+					<div
+						role="alert"
+						className="mx-auto flex w-full max-w-[1600px] items-start gap-3 border-t border-danger bg-danger-soft px-4 py-2.5 text-sm text-danger-text sm:px-6"
 					>
 						<Icon name="warning-circle" className="mt-0.5 shrink-0" />
 						<p className="flex-1 leading-5">{saveMessage}</p>
