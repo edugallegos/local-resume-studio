@@ -246,7 +246,7 @@ describe("DesignPanel", () => {
 			expect(latest().metadata.typography.heading.lineHeight).toBe(preset.headingLineHeight);
 		}
 
-		await user.selectOptions(screen.getByLabelText("Entry layout"), "compact");
+		await user.click(screen.getByRole("button", { name: "Compact entry layout" }));
 		expect(latest().metadata.design.entry?.layout).toBe("compact");
 
 		await user.selectOptions(screen.getByLabelText("Entry lead"), "role");
@@ -353,5 +353,275 @@ describe("DesignPanel", () => {
 		expect(next.basics).toEqual(data.basics);
 		expect(next.summary.content).toBe(data.summary.content);
 		expect(next.sections).toEqual(data.sections);
+	});
+});
+
+describe("DesignPanel groups", () => {
+	it("organizes Design into keyboard-accessible Template, Entries, Type, Color, Page, and Advanced groups", async () => {
+		const { user } = setup();
+		const nav = screen.getByRole("navigation", { name: "Design groups" });
+		const labels = within(nav)
+			.getAllByRole("button")
+			.map((button) => button.textContent);
+		expect(labels).toEqual(["Template", "Entries", "Type", "Color", "Page", "Advanced"]);
+
+		for (const label of labels) {
+			const button = within(nav).getByRole("button", { name: label });
+			button.focus();
+			expect(document.activeElement).toBe(button);
+		}
+
+		const advanced = within(nav).getByRole("button", { name: "Advanced" });
+		expect(advanced.getAttribute("aria-expanded")).toBe("false");
+		await user.click(advanced);
+		expect(advanced.getAttribute("aria-expanded")).toBe("true");
+		expect(screen.getByRole("heading", { name: "Advanced" })).toBeTruthy();
+		expect(screen.getByRole("checkbox", { name: "Hyphenation" })).toBeTruthy();
+	});
+
+	it("offers visual wireframe choices for every entry header layout", async () => {
+		const { user, latest } = setup();
+		const expected = [
+			["Stacked", "stacked"],
+			["One line", "inline"],
+			["Compact", "compact"],
+			["Date column", "date-column"],
+			["Eyebrow", "eyebrow"],
+		] as const;
+		const group = screen.getByRole("group", { name: "Header layout" });
+
+		for (const [label, layout] of expected) {
+			const option = within(group).getByRole("button", { name: `${label} entry layout` });
+			expect(option.querySelector("[data-entry-wireframe]")).toBeTruthy();
+			await user.click(option);
+			expect(latest().metadata.design.entry?.layout).toBe(layout);
+			expect(option.getAttribute("aria-pressed")).toBe("true");
+		}
+	});
+
+	it("writes the lead row and entry accent from quick controls", async () => {
+		const { user, latest } = setup();
+
+		await user.selectOptions(screen.getByLabelText("Entry lead"), "role");
+		expect(latest().metadata.design.entry?.lead).toBe("role");
+
+		await user.selectOptions(screen.getByLabelText("Entry accent"), "band");
+		expect(latest().metadata.design.entry?.accent).toBe("band");
+	});
+
+	it("offers nine font pairings and all local density choices", async () => {
+		const { user, latest } = setup();
+		const pairing = screen.getByLabelText("Font pairing");
+		expect(within(pairing).getAllByRole("option")).toHaveLength(FONT_PAIRINGS.length);
+
+		for (const option of FONT_PAIRINGS) {
+			await user.selectOptions(pairing, option.id);
+			expect(latest().metadata.typography.body.fontFamily).toBe(option.body);
+			expect(latest().metadata.typography.heading.fontFamily).toBe(option.heading);
+		}
+
+		for (const [density, preset] of Object.entries(DENSITY_PRESETS)) {
+			await user.selectOptions(screen.getByLabelText("Density"), density);
+			expect(latest().metadata.page.gapY).toBe(preset.gapY);
+			expect(latest().metadata.typography.body.lineHeight).toBe(preset.bodyLineHeight);
+		}
+	});
+});
+
+describe("DesignPanel color controls", () => {
+	it("applies accent swatches with readable labels", async () => {
+		const { user, latest } = setup();
+
+		await user.click(screen.getByRole("button", { name: "Ink blue" }));
+		expect(latest().metadata.design.colors.primary).toBe("rgba(47, 90, 138, 1)");
+	});
+
+	it("accepts valid three- and six-digit hex input and writes rgba", async () => {
+		const { user, latest } = setup();
+		const custom = screen.getByLabelText("Custom color (hex)");
+
+		await user.clear(custom);
+		await user.type(custom, "#0af");
+		expect(latest().metadata.design.colors.primary).toBe("rgba(0, 170, 255, 1)");
+		expect(custom.getAttribute("aria-invalid")).toBe("false");
+
+		await user.clear(custom);
+		await user.type(custom, "#123456");
+		expect(latest().metadata.design.colors.primary).toBe("rgba(18, 52, 86, 1)");
+	});
+
+	it("rejects invalid hex input without changing the color and explains the format", async () => {
+		const { user, latest } = setup();
+		const before = latest().metadata.design.colors.primary;
+		const custom = screen.getByLabelText("Custom color (hex)");
+
+		await user.clear(custom);
+		await user.type(custom, "#12zz00");
+
+		expect(custom.getAttribute("aria-invalid")).toBe("true");
+		expect(screen.getByText("Use a hex color such as #2F5A8A.")).toBeTruthy();
+		expect(latest().metadata.design.colors.primary).toBe(before);
+	});
+
+	it("shows contrast guidance for light accents and offers a darker shade", async () => {
+		const { user, latest } = setup();
+		const custom = screen.getByLabelText("Custom color (hex)");
+
+		await user.clear(custom);
+		await user.type(custom, "#ffff00");
+		expect(screen.getByRole("status").textContent).toContain("Too light for headings on white");
+
+		await user.click(screen.getByRole("button", { name: "Use a darker shade" }));
+		expect(latest().metadata.design.colors.primary).not.toBe("rgba(255, 255, 0, 1)");
+		expect(screen.queryByRole("status")).toBeNull();
+	});
+});
+
+describe("DesignPanel advanced controls", () => {
+	const openAdvanced = async () => {
+		const context = setup();
+		await context.user.click(screen.getByRole("button", { name: "Advanced" }));
+		return context;
+	};
+
+	it("writes exact body and heading families, weights, sizes, line heights, and hyphenation", async () => {
+		const { user, latest } = await openAdvanced();
+
+		await user.selectOptions(screen.getByLabelText("Body font family"), "Lato");
+		await user.selectOptions(screen.getByLabelText("Heading font family"), "Playfair Display");
+		await user.click(screen.getByRole("checkbox", { name: "Body weight 700" }));
+		await user.click(screen.getByRole("checkbox", { name: "Body weight 500" }));
+		await user.selectOptions(screen.getByLabelText("Heading font weight"), "700");
+
+		const bodySize = screen.getByLabelText("Body font size");
+		await user.clear(bodySize);
+		await user.type(bodySize, "11.5");
+		const bodyLine = screen.getByLabelText("Body line height");
+		await user.clear(bodyLine);
+		await user.type(bodyLine, "1.6");
+		const headingSize = screen.getByLabelText("Heading font size");
+		await user.clear(headingSize);
+		await user.type(headingSize, "15.5");
+		const headingLine = screen.getByLabelText("Heading line height");
+		await user.clear(headingLine);
+		await user.type(headingLine, "1.25");
+
+		await user.click(screen.getByRole("checkbox", { name: "Hyphenation" }));
+
+		const typography = latest().metadata.typography;
+		expect(typography.body).toMatchObject({
+			fontFamily: "Lato",
+			fontWeights: ["400", "700"],
+			fontSize: 11.5,
+			lineHeight: 1.6,
+		});
+		expect(typography.heading).toMatchObject({
+			fontFamily: "Playfair Display",
+			fontWeights: ["700"],
+			fontSize: 15.5,
+			lineHeight: 1.25,
+		});
+		expect(typography.hyphenation).toBe(true);
+	});
+
+	it("writes all three design colors and the level display", async () => {
+		const { latest } = await openAdvanced();
+
+		fireEvent.change(screen.getByLabelText("Primary color"), { target: { value: "#123456" } });
+		fireEvent.change(screen.getByLabelText("Text color"), { target: { value: "#111111" } });
+		fireEvent.change(screen.getByLabelText("Background color"), { target: { value: "#fafafa" } });
+		fireEvent.change(screen.getByLabelText("Level display"), { target: { value: "progress-bar" } });
+
+		expect(latest().metadata.design.colors).toEqual({
+			primary: "rgba(18, 52, 86, 1)",
+			text: "rgba(17, 17, 17, 1)",
+			background: "rgba(250, 250, 250, 1)",
+		});
+		expect(latest().metadata.design.level.type).toBe("progress-bar");
+	});
+
+	it("writes locale, date format, spacing, and visibility flags", async () => {
+		const { user, latest } = await openAdvanced();
+
+		const locale = screen.getByLabelText("Page locale");
+		await user.clear(locale);
+		await user.type(locale, "de-DE");
+		await user.selectOptions(screen.getByLabelText("Date format"), "iso");
+
+		const gapX = screen.getByLabelText("Horizontal spacing");
+		await user.clear(gapX);
+		await user.type(gapX, "2.5");
+		const gapY = screen.getByLabelText("Vertical spacing");
+		await user.clear(gapY);
+		await user.type(gapY, "3.5");
+
+		await user.click(screen.getByRole("checkbox", { name: "Icons in contact line" }));
+		await user.click(screen.getByRole("checkbox", { name: "Underline links" }));
+		await user.click(screen.getByRole("checkbox", { name: "Section icons" }));
+
+		expect(latest().metadata.page).toMatchObject({
+			locale: "de-DE",
+			dateFormat: "iso",
+			gapX: 2.5,
+			gapY: 3.5,
+			hideIcons: true,
+			hideLinkUnderline: true,
+			hideSectionIcons: false,
+		});
+	});
+
+	it("resets visual defaults while preserving content, page placement, locale, date format, style rules, and stylesheet", async () => {
+		const data = syntheticResume();
+		data.metadata.page.locale = "de-DE";
+		data.metadata.page.dateFormat = "iso";
+		data.metadata.styleRules = [
+			{
+				id: "rule-1",
+				enabled: true,
+				target: { scope: "global" },
+				slots: { heading: { color: "#123456" } },
+			},
+		] as never;
+		data.metadata.stylesheet = { version: 1, css: ".summary { color: red; }" } as never;
+		data.metadata.layout.pages.push({ fullWidth: true, main: ["awards"], sidebar: [] });
+		const pages = structuredClone(data.metadata.layout.pages);
+		const { user, latest } = setup(data);
+		await user.click(screen.getByRole("button", { name: "Advanced" }));
+		await user.click(screen.getByRole("button", { name: "Reset design defaults" }));
+
+		const next = latest();
+		expect(next.basics).toEqual(data.basics);
+		expect(next.sections).toEqual(data.sections);
+		expect(next.metadata.layout.pages).toEqual(pages);
+		expect(next.metadata.page.locale).toBe("de-DE");
+		expect(next.metadata.page.dateFormat).toBe("iso");
+		expect(next.metadata.styleRules).toEqual(data.metadata.styleRules);
+		expect(next.metadata.stylesheet).toEqual(data.metadata.stylesheet);
+		expect(next.metadata.typography).toEqual(defaultResumeData.metadata.typography);
+		expect(next.metadata.design).toEqual(defaultResumeData.metadata.design);
+	});
+
+	it("keeps page and sidebar controls in the Page group and preserves unknown metadata", async () => {
+		const data = syntheticResume();
+		data.metadata.template = "azurill";
+		(data.metadata.layout as unknown as Record<string, unknown>)["x-layout-extra"] = { keep: true };
+		const { user, latest } = setup(data);
+
+		await user.selectOptions(screen.getByLabelText("Sidebar side"), "right");
+		const width = screen.getByLabelText("Sidebar width");
+		await user.clear(width);
+		await user.type(width, "38");
+		expect(latest().metadata.layout.sidebarSide).toBe("right");
+		expect(latest().metadata.layout.sidebarWidth).toBe(38);
+		expect((latest().metadata.layout as unknown as Record<string, unknown>)["x-layout-extra"]).toEqual({
+			keep: true,
+		});
+
+		await user.click(screen.getByRole("button", { name: "Add page" }));
+		expect(latest().metadata.layout.pages).toHaveLength(2);
+		expect(screen.getByRole("heading", { name: "Page 2" })).toBeTruthy();
+
+		await user.click(screen.getByRole("checkbox", { name: "Full width for page 2" }));
+		expect(latest().metadata.layout.pages[1]?.fullWidth).toBe(true);
 	});
 });

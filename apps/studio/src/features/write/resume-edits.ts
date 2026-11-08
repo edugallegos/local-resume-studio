@@ -1,4 +1,5 @@
 import type { EntryHeader, Page, ResumeData, RoleItem } from "@reactive-resume/schema/resume/data";
+import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import type { Template } from "@reactive-resume/schema/templates";
 import { produce } from "immer";
 
@@ -10,7 +11,45 @@ export const DENSITY_PRESETS = {
 } as const;
 
 export type DesignDensity = keyof typeof DENSITY_PRESETS;
+
+/** Page margins in points: quick presets that Fit tightens through. */
+export const MARGIN_PRESETS = {
+	wide: { marginX: 19, marginY: 16 },
+	normal: { marginX: 14, marginY: 12 },
+	narrow: { marginX: 10, marginY: 8 },
+} as const;
+
+export type MarginPreset = keyof typeof MARGIN_PRESETS;
 export type LayoutColumn = "main" | "sidebar";
+
+type TypographyItem = ResumeData["metadata"]["typography"]["body"];
+type DesignColors = ResumeData["metadata"]["design"]["colors"];
+type LevelDesign = ResumeData["metadata"]["design"]["level"];
+
+export type PageSettings = Partial<
+	Pick<
+		Page,
+		| "format"
+		| "marginX"
+		| "marginY"
+		| "gapX"
+		| "gapY"
+		| "locale"
+		| "dateFormat"
+		| "hideLinkUnderline"
+		| "hideIcons"
+		| "hideSectionIcons"
+	>
+>;
+
+/** Only the metadata Fit may change, captured before a run so a failed fit can be reverted. */
+export type FitDesignState = {
+	page: Pick<Page, "gapX" | "gapY" | "marginX" | "marginY">;
+	typography: {
+		body: Pick<TypographyItem, "fontSize" | "lineHeight">;
+		heading: Pick<TypographyItem, "fontSize" | "lineHeight">;
+	};
+};
 
 /** Resume sections with native add/update/remove/reorder controls in the Write panel. */
 export type EditableSection =
@@ -56,12 +95,23 @@ export type ResumeEdit =
 	| { type: "update-font-pairing"; body: string; heading: string }
 	| { type: "update-density"; density: DesignDensity }
 	| { type: "update-entry-layout"; changes: Partial<Pick<EntryHeader, "layout" | "lead" | "accent">> }
-	| { type: "update-page"; changes: Partial<Pick<Page, "format" | "marginX" | "marginY">> }
+	| { type: "update-page"; changes: PageSettings }
+	| { type: "update-typography"; body?: Partial<TypographyItem>; heading?: Partial<TypographyItem>; hyphenation?: boolean }
+	| { type: "update-design-colors"; colors: Partial<DesignColors> }
+	| { type: "update-level-design"; changes: Partial<LevelDesign> }
+	| { type: "reset-design" }
 	| { type: "update-text-size"; bodySize: number }
 	| { type: "update-accent"; color: string }
 	| { type: "set-section-visibility"; sectionId: string; hidden: boolean }
 	| { type: "move-section"; sectionId: string; column: LayoutColumn; direction: "up" | "down" }
-	| { type: "move-section-to-column"; sectionId: string; column: LayoutColumn };
+	| { type: "move-section-to-column"; sectionId: string; column: LayoutColumn }
+	| { type: "move-section-to-slot"; sectionId: string; pageIndex: number; column: LayoutColumn; toIndex?: number }
+	| { type: "add-page" }
+	| { type: "remove-page"; pageIndex: number }
+	| { type: "set-page-full-width"; pageIndex: number; fullWidth: boolean }
+	| { type: "set-sidebar-width"; width: number }
+	| { type: "set-sidebar-side"; side: "left" | "right" | undefined }
+	| { type: "restore-fit-state"; state: FitDesignState };
 
 type RawItem = Record<string, unknown>;
 type RawSection = { items: RawItem[] };
@@ -194,7 +244,10 @@ export const displayedSectionIds = (data: ResumeData, column: LayoutColumn): str
 	const placedInColumn = (column === "main" ? page?.main : page?.sidebar) ?? [];
 	if (column === "sidebar") return [...placedInColumn];
 
-	const placed = new Set([...(page?.main ?? []), ...(page?.sidebar ?? [])]);
+	// A section already placed on any page is not appended to page 1; otherwise it would show twice.
+	const placed = new Set(
+		data.metadata.layout.pages.flatMap((candidate) => [...candidate.main, ...candidate.sidebar]),
+	);
 	return [...placedInColumn, ...knownSectionIds(data).filter((id) => !placed.has(id))];
 };
 
@@ -208,6 +261,22 @@ const placeSection = (data: ResumeData, sectionId: string, column: LayoutColumn)
 	page.main = page.main.filter((id) => id !== sectionId);
 	page.sidebar = page.sidebar.filter((id) => id !== sectionId);
 	(column === "main" ? page.main : page.sidebar).push(sectionId);
+};
+
+/** Removes a section from every page and column so a move can insert it once, without duplication. */
+const removeSectionFromLayout = (data: ResumeData, sectionId: string): void => {
+	for (const page of data.metadata.layout.pages) {
+		for (const column of ["main", "sidebar"] as const) {
+			page[column] = page[column].filter((id) => id !== sectionId);
+		}
+	}
+};
+
+const sanitizeTypography = (changes: Partial<TypographyItem>): Partial<TypographyItem> => {
+	const next = { ...changes };
+	if (next.fontSize !== undefined) next.fontSize = clamp(next.fontSize, 6, 24);
+	if (next.lineHeight !== undefined) next.lineHeight = clamp(next.lineHeight, 0.5, 4);
+	return next;
 };
 
 export const editResume = (data: ResumeData, edit: ResumeEdit): ResumeData =>
@@ -345,13 +414,89 @@ export const editResume = (data: ResumeData, edit: ResumeEdit): ResumeData =>
 			}
 
 			case "update-page": {
-				if (edit.changes.format !== undefined) draft.metadata.page.format = edit.changes.format;
-				if (edit.changes.marginX !== undefined) {
-					draft.metadata.page.marginX = clamp(edit.changes.marginX, 0, 100);
+				const { changes } = edit;
+				if (changes.format !== undefined) draft.metadata.page.format = changes.format;
+				if (changes.marginX !== undefined) draft.metadata.page.marginX = clamp(changes.marginX, 0, 100);
+				if (changes.marginY !== undefined) draft.metadata.page.marginY = clamp(changes.marginY, 0, 100);
+				if (changes.gapX !== undefined) draft.metadata.page.gapX = clamp(changes.gapX, 0, 100);
+				if (changes.gapY !== undefined) draft.metadata.page.gapY = clamp(changes.gapY, 0, 100);
+				if (changes.locale !== undefined) draft.metadata.page.locale = changes.locale;
+				if (changes.dateFormat !== undefined) draft.metadata.page.dateFormat = changes.dateFormat;
+				if (changes.hideLinkUnderline !== undefined) {
+					draft.metadata.page.hideLinkUnderline = changes.hideLinkUnderline;
 				}
-				if (edit.changes.marginY !== undefined) {
-					draft.metadata.page.marginY = clamp(edit.changes.marginY, 0, 100);
+				if (changes.hideIcons !== undefined) draft.metadata.page.hideIcons = changes.hideIcons;
+				if (changes.hideSectionIcons !== undefined) {
+					draft.metadata.page.hideSectionIcons = changes.hideSectionIcons;
 				}
+				return;
+			}
+
+			case "update-typography": {
+				if (edit.body) Object.assign(draft.metadata.typography.body, sanitizeTypography(edit.body));
+				if (edit.heading) Object.assign(draft.metadata.typography.heading, sanitizeTypography(edit.heading));
+				if (edit.hyphenation !== undefined) draft.metadata.typography.hyphenation = edit.hyphenation;
+				return;
+			}
+
+			case "update-design-colors": {
+				const { colors } = edit;
+				if (colors.primary !== undefined) draft.metadata.design.colors.primary = colors.primary;
+				if (colors.text !== undefined) draft.metadata.design.colors.text = colors.text;
+				if (colors.background !== undefined) draft.metadata.design.colors.background = colors.background;
+				return;
+			}
+
+			case "update-level-design": {
+				const { changes } = edit;
+				if (changes.type !== undefined) draft.metadata.design.level.type = changes.type;
+				if (changes.icon !== undefined) draft.metadata.design.level.icon = changes.icon;
+				return;
+			}
+
+			case "reset-design": {
+				const defaults = defaultResumeData.metadata;
+
+				// Spread the draft first so unknown keys survive; known visual fields are overwritten.
+				draft.metadata.typography.body = {
+					...draft.metadata.typography.body,
+					...structuredClone(defaults.typography.body),
+				};
+				draft.metadata.typography.heading = {
+					...draft.metadata.typography.heading,
+					...structuredClone(defaults.typography.heading),
+				};
+				if (defaults.typography.hyphenation === undefined) delete draft.metadata.typography.hyphenation;
+				else draft.metadata.typography.hyphenation = defaults.typography.hyphenation;
+
+				draft.metadata.design.colors = {
+					...draft.metadata.design.colors,
+					...structuredClone(defaults.design.colors),
+				};
+				draft.metadata.design.level = {
+					...draft.metadata.design.level,
+					...structuredClone(defaults.design.level),
+				};
+				if (defaults.design.entry) {
+					draft.metadata.design.entry = {
+						...draft.metadata.design.entry,
+						...structuredClone(defaults.design.entry),
+					};
+				}
+
+				// Paper, language, date format, pages, sidebar side, style rules and stylesheet are the user's.
+				const { gapX, gapY, marginX, marginY, hideIcons, hideLinkUnderline, hideSectionIcons } =
+					defaults.page;
+				Object.assign(draft.metadata.page, {
+					gapX,
+					gapY,
+					marginX,
+					marginY,
+					hideIcons,
+					hideLinkUnderline,
+					hideSectionIcons,
+				});
+				draft.metadata.layout.sidebarWidth = defaults.layout.sidebarWidth;
 				return;
 			}
 
@@ -407,6 +552,78 @@ export const editResume = (data: ResumeData, edit: ResumeEdit): ResumeData =>
 
 			case "move-section-to-column": {
 				placeSection(draft as ResumeData, edit.sectionId, edit.column);
+				return;
+			}
+
+			case "move-section-to-slot": {
+				const target = draft.metadata.layout.pages[edit.pageIndex];
+				if (!target) return;
+				removeSectionFromLayout(draft as ResumeData, edit.sectionId);
+				const targetColumn = edit.column === "sidebar" && target.fullWidth ? "main" : edit.column;
+				const list = target[targetColumn];
+				const index = clampIndex(edit.toIndex ?? list.length, list.length + 1);
+				list.splice(index, 0, edit.sectionId);
+				return;
+			}
+
+			case "add-page": {
+				draft.metadata.layout.pages.push({ fullWidth: false, main: [], sidebar: [] });
+				return;
+			}
+
+			case "remove-page": {
+				const pages = draft.metadata.layout.pages;
+				if (pages.length <= 1) return;
+				const source = pages[edit.pageIndex];
+				if (!source) return;
+				const targetIndex = edit.pageIndex === 0 ? 1 : 0;
+				const target = pages[targetIndex];
+				if (!target) return;
+
+				for (const column of ["main", "sidebar"] as const) {
+					for (const sectionId of source[column]) {
+						const targetColumn = column === "sidebar" && target.fullWidth ? "main" : column;
+						if (!target[targetColumn].includes(sectionId)) target[targetColumn].push(sectionId);
+					}
+				}
+				pages.splice(edit.pageIndex, 1);
+				return;
+			}
+
+			case "set-page-full-width": {
+				const page = draft.metadata.layout.pages[edit.pageIndex];
+				if (!page) return;
+				page.fullWidth = edit.fullWidth;
+				if (edit.fullWidth) {
+					for (const sectionId of page.sidebar) {
+						if (!page.main.includes(sectionId)) page.main.push(sectionId);
+					}
+					page.sidebar = [];
+				}
+				return;
+			}
+
+			case "set-sidebar-width": {
+				draft.metadata.layout.sidebarWidth = clamp(edit.width, 10, 50);
+				return;
+			}
+
+			case "set-sidebar-side": {
+				if (edit.side === undefined) delete draft.metadata.layout.sidebarSide;
+				else draft.metadata.layout.sidebarSide = edit.side;
+				return;
+			}
+
+			case "restore-fit-state": {
+				const { page, typography } = edit.state;
+				draft.metadata.page.gapX = page.gapX;
+				draft.metadata.page.gapY = page.gapY;
+				draft.metadata.page.marginX = page.marginX;
+				draft.metadata.page.marginY = page.marginY;
+				draft.metadata.typography.body.fontSize = typography.body.fontSize;
+				draft.metadata.typography.body.lineHeight = typography.body.lineHeight;
+				draft.metadata.typography.heading.fontSize = typography.heading.fontSize;
+				draft.metadata.typography.heading.lineHeight = typography.heading.lineHeight;
 				return;
 			}
 		}

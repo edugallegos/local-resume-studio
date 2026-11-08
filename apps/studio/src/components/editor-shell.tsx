@@ -8,9 +8,16 @@ import { Icon, type IconName } from "@reactive-resume/ui/components/icon";
 import { Separator } from "@reactive-resume/ui/components/separator";
 import { Spinner } from "@reactive-resume/ui/components/spinner";
 import { cn } from "@reactive-resume/utils/style";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckPanel } from "../features/check/check-panel";
 import type { CheckIssue } from "../features/check/issue-model";
+import {
+	captureFitState,
+	FIT_RENDER_TIMEOUT_MS,
+	fitStateOf,
+	fitToPages,
+	type FitStep,
+} from "../features/design/fit";
 import { DesignPanel } from "../features/design/design-panel";
 import {
 	templateDisplayName,
@@ -19,7 +26,7 @@ import {
 import type { ResumePdfRender } from "../features/export/render-resume-pdf";
 import { type LoadPdfDocument, PdfPreview } from "../features/preview/pdf-preview";
 import { WritePanel } from "../features/write/write-panel";
-import type { ResumeEdit } from "../features/write/resume-edits";
+import { editResume, MARGIN_PRESETS, type ResumeEdit } from "../features/write/resume-edits";
 import type { EditorState } from "../state/editor-state";
 
 export type EditorTab = "write" | "design" | "check";
@@ -51,6 +58,8 @@ export type EditorShellProps = {
 	/** Tests can disable or inject the gallery's PDF thumbnail renderer. */
 	designThumbnailsEnabled?: boolean;
 	designThumbnailDependencies?: TemplateThumbnailDependencies;
+	/** How long Fit waits for one completed PDF render before stopping; tests shorten it. */
+	fitRenderTimeoutMs?: number;
 	onReloadFromDisk?: () => void;
 	onKeepEditing?: () => void;
 	resolvingConflict?: boolean;
@@ -98,6 +107,28 @@ const formatUpdatedAt = (value: string | undefined): string | null => {
 	const date = new Date(value);
 	if (Number.isNaN(date.getTime())) return null;
 	return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+};
+
+/** The parent rebuilds the draft with Immer, so an equal edit is a new object; compare content for interference. */
+const sameResume = (a: ResumeData | null, b: ResumeData | null): boolean =>
+	a === b || (a !== null && b !== null && JSON.stringify(a) === JSON.stringify(b));
+
+/** Maps one Fit step to the same typed edits the Design panel uses. */
+const editForFitStep = (step: FitStep, data: ResumeData): ResumeEdit => {
+	if (step.type === "density") return { type: "update-density", density: step.density };
+	if (step.type === "margins") {
+		const margins = MARGIN_PRESETS[step.margins];
+		return { type: "update-page", changes: { marginX: margins.marginX, marginY: margins.marginY } };
+	}
+
+	const { body, heading } = data.metadata.typography;
+	const ratio = body.fontSize > 0 ? heading.fontSize / body.fontSize : 1.4;
+	const headingSize = Math.min(24, Math.max(6, Math.round(step.size * ratio * 2) / 2));
+	return {
+		type: "update-typography",
+		body: { fontSize: step.size },
+		heading: { fontSize: headingSize },
+	};
 };
 
 function SaveState({ state, saveMessage }: { state: EditorState; saveMessage?: string | null }) {
@@ -190,6 +221,7 @@ export function EditorShell({
 	onShowOnPdf,
 	designThumbnailsEnabled = true,
 	designThumbnailDependencies,
+	fitRenderTimeoutMs = FIT_RENDER_TIMEOUT_MS,
 	onReloadFromDisk,
 	onKeepEditing,
 	resolvingConflict = false,
@@ -229,14 +261,172 @@ export function EditorShell({
 		return { ...state.data, metadata: { ...state.data.metadata, template: previewTemplate } };
 	}, [previewTemplate, state.data]);
 
+	const [appliedRender, setAppliedRender] = useState<ResumePdfRender | null>(null);
+	const [fitRunning, setFitRunning] = useState(false);
+	const [fitMessage, setFitMessage] = useState<string | null>(null);
+	const dataRef = useRef<ResumeData | null>(state.data);
+	dataRef.current = state.data;
+	const renderStateRef = useRef<{ version: number; pageCount: number | null }>({ version: 0, pageCount: null });
+	const renderWaitersRef = useRef(new Set<() => void>());
+	const fitTokenRef = useRef(0);
+
+	useEffect(() => {
+		if (previewTemplate === null) return;
+		// Starting a temporary preview supersedes a fit that is still waiting for an applied render.
+		fitTokenRef.current += 1;
+		setFitRunning(false);
+	}, [previewTemplate]);
+
 	const handlePreviewRendered = useCallback(
 		(result: ResumePdfRender | null) => {
 			// A temporary template never becomes the downloadable PDF. The applied render keeps that role.
 			if (isPreviewing) return;
+			setAppliedRender(result);
+			const pageCount = result ? result.pageMap.pages.length || null : null;
+			renderStateRef.current = { version: renderStateRef.current.version + 1, pageCount };
+			for (const notify of [...renderWaitersRef.current]) notify();
 			onPdfRendered?.(result);
 		},
 		[isPreviewing, onPdfRendered],
 	);
+
+	const waitForNextRender = (baseline: number): Promise<boolean> =>
+		new Promise((resolve) => {
+			if (renderStateRef.current.version > baseline) {
+				resolve(true);
+				return;
+			}
+			let timer: ReturnType<typeof setTimeout>;
+			const settle = (arrived: boolean) => {
+				clearTimeout(timer);
+				renderWaitersRef.current.delete(notify);
+				resolve(arrived);
+			};
+			const notify = () => settle(true);
+			renderWaitersRef.current.add(notify);
+			timer = setTimeout(() => settle(false), fitRenderTimeoutMs);
+		});
+
+	const runFit = async (): Promise<void> => {
+		const current = dataRef.current;
+		if (!current || fitRunning) return;
+
+		const authored = Math.max(1, current.metadata.layout.pages.length);
+		const initialPages = renderStateRef.current.pageCount;
+		if (initialPages === null) {
+			setFitMessage("Wait for the preview to finish before fitting.");
+			return;
+		}
+		if (initialPages <= authored) {
+			setFitMessage("Already fits.");
+			return;
+		}
+
+		const token = fitTokenRef.current + 1;
+		fitTokenRef.current = token;
+		setFitRunning(true);
+		setFitMessage(null);
+
+		const snapshot = captureFitState(current.metadata);
+		let working = current;
+		let awaitingRender = false;
+		let interrupted = false;
+		let timedOut = false;
+
+		const result = await fitToPages({
+			initial: fitStateOf(current.metadata),
+			isInterrupted: () =>
+				token !== fitTokenRef.current || (!awaitingRender && !sameResume(dataRef.current, working)),
+			apply: (step) => {
+				if (!sameResume(dataRef.current, working)) {
+					interrupted = true;
+					return;
+				}
+				const edit = editForFitStep(step, working);
+				working = editResume(working, edit);
+				awaitingRender = true;
+				onEdit(edit);
+			},
+			measure: async (afterStep) => {
+				if (!afterStep) {
+					if (renderStateRef.current.pageCount === null) {
+						const baseline = renderStateRef.current.version;
+						const arrived = await waitForNextRender(baseline);
+						if (!arrived) {
+							timedOut = true;
+							return "timeout";
+						}
+					}
+					if (!sameResume(dataRef.current, working)) {
+						interrupted = true;
+						return "overflow";
+					}
+					const pageCount = renderStateRef.current.pageCount;
+					if (pageCount === null) {
+						timedOut = true;
+						return "timeout";
+					}
+					return pageCount <= authored ? "fit" : "overflow";
+				}
+
+				const baseline = renderStateRef.current.version;
+				const arrived = await waitForNextRender(baseline);
+				awaitingRender = false;
+				if (!arrived) {
+					timedOut = true;
+					return "timeout";
+				}
+				if (!sameResume(dataRef.current, working)) {
+					interrupted = true;
+					return "overflow";
+				}
+				const pageCount = renderStateRef.current.pageCount;
+				if (pageCount === null) {
+					timedOut = true;
+					return "timeout";
+				}
+				return pageCount <= authored ? "fit" : "overflow";
+			},
+		});
+
+		if (token !== fitTokenRef.current) return;
+		setFitRunning(false);
+
+		if (interrupted || result.status === "interrupted") {
+			const superseded = !sameResume(dataRef.current, working);
+			setFitMessage(
+				superseded
+					? "Fit stopped because a newer edit superseded it. Your edit was kept."
+					: "Fit stopped because the draft changed.",
+			);
+			return;
+		}
+		if (timedOut || result.status === "timeout") {
+			const superseded = !sameResume(dataRef.current, working);
+			const restored = result.applied && !superseded;
+			if (restored) onEdit({ type: "restore-fit-state", state: snapshot });
+			setFitMessage(
+				superseded
+					? "Fit stopped because a newer edit superseded it. Your edit was kept."
+					: restored
+						? "The preview took too long and the design was restored. Check the pages and try again."
+						: "Fit stopped because the preview took too long. Check the pages and try again.",
+			);
+			return;
+		}
+		if (result.status === "exhausted") {
+			// Nothing gained: put only the fit-related metadata back, unless no step was ever applied.
+			if (result.applied) onEdit({ type: "restore-fit-state", state: snapshot });
+			setFitMessage(
+				result.applied
+					? `Couldn't fit within ${authored} authored ${authored === 1 ? "page" : "pages"}, even at 9 pt. The design was restored.`
+					: `Couldn't fit within ${authored} authored ${authored === 1 ? "page" : "pages"}, even at 9 pt. The design was unchanged.`,
+			);
+			return;
+		}
+
+		setFitMessage(result.applied ? "Fit applied." : "Already fits.");
+	};
 
 	return (
 		<div className="flex min-h-dvh flex-col bg-bg text-ink">
@@ -422,6 +612,10 @@ export function EditorShell({
 												onPreviewTemplate={setPreviewTemplate}
 												thumbnailsEnabled={designThumbnailsEnabled && activeTab === "design"}
 												thumbnailDependencies={designThumbnailDependencies}
+												renderedPages={appliedRender ? appliedRender.pageMap.pages.length || null : null}
+												fitRunning={fitRunning}
+												fitMessage={fitMessage}
+												onFit={() => void runFit()}
 											/>
 										) : null}
 										<div className="mt-6 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">

@@ -1,5 +1,5 @@
 import type { EntryHeader, ResumeData } from "@reactive-resume/schema/resume/data";
-import { entryHeaderAccents, entryHeaderLayouts, entryHeaderOf } from "@reactive-resume/schema/resume/data";
+import { entryHeaderAccents, entryHeaderOf } from "@reactive-resume/schema/resume/data";
 import { type Template, templateLayouts, templateSchema } from "@reactive-resume/schema/templates";
 import { Icon } from "@reactive-resume/ui/components/icon";
 import { cn } from "@reactive-resume/utils/style";
@@ -10,15 +10,28 @@ import {
 	useState,
 	type FocusEvent,
 	type KeyboardEvent,
+	type ReactNode,
 	type RefObject,
 } from "react";
 import {
 	DENSITY_PRESETS,
 	type DesignDensity,
-	displayedSectionIds,
-	type LayoutColumn,
+	MARGIN_PRESETS,
+	type MarginPreset,
 	type ResumeEdit,
 } from "../write/resume-edits";
+import { AdvancedGroup } from "./advanced-group";
+import {
+	ACCENTS,
+	contrastRatio,
+	darkenForWhite,
+	hexToRgba,
+	normalizeHex,
+	rgbaToHex,
+} from "./design-color";
+import { fieldClass, NumberInput } from "./design-ui";
+import { PageLayout } from "./page-layout";
+import { SECTION_LABELS } from "./section-labels";
 import {
 	templateDisplayName,
 	templateSampleImage,
@@ -26,7 +39,7 @@ import {
 	useTemplateThumbnail,
 } from "./template-thumbnail";
 
-export { DENSITY_PRESETS };
+export { DENSITY_PRESETS, SECTION_LABELS };
 
 export type FontPairing = { id: string; label: string; body: string; heading: string };
 
@@ -43,50 +56,7 @@ export const FONT_PAIRINGS: FontPairing[] = [
 	{ id: "roboto-slab", label: "Roboto + Roboto Slab", body: "Roboto", heading: "Roboto Slab" },
 ];
 
-/** The persistent sections a resume can show, by schema key. */
-export const SECTION_LABELS = {
-	summary: "Summary",
-	profiles: "Profiles",
-	experience: "Experience",
-	education: "Education",
-	projects: "Projects",
-	skills: "Skills",
-	languages: "Languages",
-	interests: "Interests",
-	awards: "Awards",
-	certifications: "Certifications",
-	publications: "Publications",
-	volunteer: "Volunteer",
-	references: "References",
-} as const;
-
-type SectionEntry = { id: string; label: string; hidden: boolean };
-
 const titleCase = (value: string): string => value.charAt(0).toUpperCase() + value.slice(1);
-
-const parseRgba = (value: string): { r: number; g: number; b: number } | null => {
-	const match = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-	if (!match) return null;
-	return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) };
-};
-
-const toHex = (value: string): string => {
-	const color = parseRgba(value);
-	if (!color) return "#000000";
-	const component = (channel: number) => Math.max(0, Math.min(255, channel)).toString(16).padStart(2, "0");
-	return `#${component(color.r)}${component(color.g)}${component(color.b)}`;
-};
-
-const fromHex = (value: string): string => {
-	const match = value.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
-	if (!match) return value;
-	return `rgba(${Number.parseInt(match[1] ?? "0", 16)}, ${Number.parseInt(match[2] ?? "0", 16)}, ${Number.parseInt(match[3] ?? "0", 16)}, 1)`;
-};
-
-const numberValue = (value: string, fallback: number): number => {
-	const parsed = Number(value);
-	return Number.isFinite(parsed) ? parsed : fallback;
-};
 
 export type DesignPanelProps = {
 	data: ResumeData;
@@ -96,10 +66,12 @@ export type DesignPanelProps = {
 	/** Tests can skip real PDF thumbnail rendering; production keeps it enabled. */
 	thumbnailsEnabled?: boolean;
 	thumbnailDependencies?: TemplateThumbnailDependencies;
+	/** Physical pages in the last completed applied PDF render; null until one arrives. */
+	renderedPages?: number | null;
+	fitRunning?: boolean;
+	fitMessage?: string | null;
+	onFit?: () => void;
 };
-
-const fieldClass =
-	"w-full rounded-sm border border-line-2 bg-surface px-2.5 py-1.5 text-sm text-ink shadow-none focus-visible:outline-2 focus-visible:outline-accent";
 
 export type TemplateFilter = "all" | "one" | "two" | "ats";
 
@@ -258,76 +230,262 @@ function TemplateCard({
 	);
 }
 
-function SectionList({
-	title,
-	column,
-	entries,
-	onEdit,
-}: {
-	title: string;
-	column: LayoutColumn;
-	entries: SectionEntry[];
-	onEdit: (edit: ResumeEdit) => void;
-}) {
+function DesignGroup({ id, title, children }: { id: string; title: string; children: ReactNode }) {
 	return (
-		<div className="flex min-w-0 flex-col gap-2 rounded-md border border-line bg-sunken/40 p-3">
-			<h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-ink-3">{title}</h3>
-			{entries.length === 0 ? <p className="text-xs text-ink-3">No sections in this column.</p> : null}
-			<ol className="flex flex-col gap-1.5">
-				{entries.map((entry, index) => (
-					<li
-						key={entry.id}
-						className="flex flex-wrap items-center gap-2 rounded-sm border border-line bg-surface px-2 py-1.5"
-					>
-						<label className="flex min-w-0 flex-1 items-center gap-2 text-sm text-ink">
-							<input
-								type="checkbox"
-								aria-label={`Show ${entry.label}`}
-								checked={!entry.hidden}
-								onChange={(event) =>
-									onEdit({ type: "set-section-visibility", sectionId: entry.id, hidden: !event.target.checked })
-								}
-							/>
-							<span className="truncate">{entry.label}</span>
-						</label>
-						<div className="flex items-center gap-1">
-							<button
-								type="button"
-								className="rounded-sm border border-line-2 px-1.5 py-0.5 text-xs text-ink-2 disabled:opacity-40"
-								aria-label={`Move ${entry.label} up`}
-								disabled={index === 0}
-								onClick={() => onEdit({ type: "move-section", sectionId: entry.id, column, direction: "up" })}
-							>
-								↑
-							</button>
-							<button
-								type="button"
-								className="rounded-sm border border-line-2 px-1.5 py-0.5 text-xs text-ink-2 disabled:opacity-40"
-								aria-label={`Move ${entry.label} down`}
-								disabled={index === entries.length - 1}
-								onClick={() => onEdit({ type: "move-section", sectionId: entry.id, column, direction: "down" })}
-							>
-								↓
-							</button>
-							<button
-								type="button"
-								className="rounded-sm border border-line-2 px-1.5 py-0.5 text-xs text-ink-2"
-								aria-label={`Move ${entry.label} to ${column === "main" ? "sidebar" : "main"}`}
-								onClick={() =>
-									onEdit({
-										type: "move-section-to-column",
-										sectionId: entry.id,
-										column: column === "main" ? "sidebar" : "main",
-									})
-								}
-							>
-								{column === "main" ? "→" : "←"}
-							</button>
-						</div>
-					</li>
+		<section id={`design-${id}`} aria-labelledby={`design-${id}-title`} className="flex flex-col gap-3">
+			<h2 id={`design-${id}-title`} className="text-sm font-semibold text-ink">
+				{title}
+			</h2>
+			{children}
+		</section>
+	);
+}
+
+/** One line of a layout wireframe: dark for the lead, light for the rest, accent for an eyebrow. */
+function Bar({ tone, className }: { tone?: "lead" | "accent"; className: string }) {
+	return (
+		<span
+			className={cn(
+				"block h-1 rounded-sm",
+				tone === "lead" ? "bg-ink" : tone === "accent" ? "h-[3px] bg-accent" : "bg-line-2",
+				className,
+			)}
+		/>
+	);
+}
+
+const ROW = "flex items-center justify-between gap-0.5";
+
+const ENTRY_LAYOUTS: {
+	id: EntryHeader["layout"];
+	label: string;
+	wireframe: ReactNode;
+}[] = [
+	{
+		id: "stacked",
+		label: "Stacked",
+		wireframe: (
+			<>
+				<span className={ROW}>
+					<Bar tone="lead" className="w-[46%]" />
+					<Bar className="w-[22%]" />
+				</span>
+				<span className={ROW}>
+					<Bar className="w-[38%]" />
+					<Bar className="w-[28%]" />
+				</span>
+			</>
+		),
+	},
+	{
+		id: "inline",
+		label: "One line",
+		wireframe: (
+			<span className={ROW}>
+				<span className="flex w-[68%] gap-0.5">
+					<Bar tone="lead" className="w-[45%]" />
+					<Bar className="w-[30%]" />
+					<Bar className="w-[18%]" />
+				</span>
+				<Bar className="w-[22%]" />
+			</span>
+		),
+	},
+	{
+		id: "compact",
+		label: "Compact",
+		wireframe: (
+			<>
+				<span className={ROW}>
+					<Bar tone="lead" className="w-[52%]" />
+					<Bar className="w-[26%]" />
+				</span>
+				<span className="flex gap-0.5">
+					<Bar className="w-[30%]" />
+					<Bar className="w-[16%]" />
+				</span>
+			</>
+		),
+	},
+	{
+		id: "date-column",
+		label: "Date column",
+		wireframe: (
+			<span className="flex items-center gap-1">
+				<Bar className="w-[24%] shrink-0" />
+				<span className="grid flex-1 gap-1">
+					<Bar tone="lead" className="w-[80%]" />
+					<Bar className="w-[58%]" />
+				</span>
+			</span>
+		),
+	},
+	{
+		id: "eyebrow",
+		label: "Eyebrow",
+		wireframe: (
+			<>
+				<Bar tone="accent" className="w-[40%]" />
+				<span className={ROW}>
+					<Bar tone="lead" className="h-[5px] w-[58%]" />
+					<Bar className="w-[24%]" />
+				</span>
+			</>
+		),
+	},
+];
+
+function ColorGroup({ data, onEdit }: { data: ResumeData; onEdit: (edit: ResumeEdit) => void }) {
+	const current = rgbaToHex(data.metadata.design.colors.primary) ?? "#000000";
+	const [typed, setTyped] = useState<string | null>(null);
+	const hex = typed ?? current;
+	const normalized = normalizeHex(hex);
+	const valid = normalized !== null;
+	const ratio = valid ? contrastRatio(normalized) : 1;
+	const tooLight = valid && ratio < 4.5;
+
+	const setAccent = (next: string) => {
+		setTyped(null);
+		onEdit({ type: "update-accent", color: hexToRgba(next) });
+	};
+
+	return (
+		<div className="flex flex-col gap-3">
+			<fieldset aria-label="Accent swatches" className="m-0 flex flex-wrap gap-1.5 border-0 p-0">
+				{ACCENTS.map((accent) => (
+					<button
+						key={accent.hex}
+						type="button"
+						aria-label={accent.label}
+						aria-pressed={normalized === accent.hex}
+						title={accent.label}
+						onClick={() => setAccent(accent.hex)}
+						className={cn(
+							"size-8 rounded-sm border border-line-2",
+							normalized === accent.hex && "ring-2 ring-accent ring-offset-2 ring-offset-surface",
+						)}
+						style={{ backgroundColor: accent.hex }}
+					/>
 				))}
-			</ol>
+			</fieldset>
+
+			<div className="grid gap-2 sm:grid-cols-2">
+				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+					Accent color
+					<input
+						type="color"
+						aria-label="Accent color"
+						className="h-9 w-12 rounded-sm border border-line-2 bg-surface"
+						value={normalized ?? current}
+						onChange={(event) => setAccent(event.target.value)}
+					/>
+				</label>
+				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+					Custom color (hex)
+					<input
+						className={cn(fieldClass, "font-mono")}
+						value={hex}
+						spellCheck={false}
+						aria-invalid={!valid}
+						aria-describedby={valid ? undefined : "design-accent-hex-error"}
+						onChange={(event) => {
+							const value = event.target.value;
+							setTyped(value);
+							const next = normalizeHex(value);
+							if (next) onEdit({ type: "update-accent", color: hexToRgba(next) });
+						}}
+						onBlur={() => setTyped(null)}
+					/>
+				</label>
+			</div>
+
+			{!valid ? (
+				<p id="design-accent-hex-error" className="text-xs text-danger-text">
+					Use a hex color such as #2F5A8A.
+				</p>
+			) : null}
+
+			{valid ? (
+				<p className={cn("font-mono text-xs", tooLight ? "text-warn-text" : "text-ink-3")}>
+					{ratio.toFixed(1)}:1 contrast on white
+				</p>
+			) : null}
+
+			{tooLight ? (
+				<div
+					role="status"
+					className="flex flex-wrap items-center gap-3 rounded-md border border-warn bg-warn-soft px-3 py-2 text-xs text-warn-text"
+				>
+					<span>Too light for headings on white. It may be hard to read and print faintly.</span>
+					<button
+						type="button"
+						className="rounded-sm border border-line-2 px-2 py-1 text-ink-2 hover:bg-hover"
+						onClick={() => setAccent(darkenForWhite(normalized))}
+					>
+						Use a darker shade
+					</button>
+				</div>
+			) : null}
+
+			<p className="text-xs leading-5 text-ink-3">
+				Accent is used for headings, icons, and the header band. Body text stays near-black for print and ATS.
+			</p>
 		</div>
+	);
+}
+
+function PageStatus({
+	data,
+	renderedPages,
+	fitRunning,
+	fitMessage,
+	onEdit,
+	onFit,
+}: {
+	data: ResumeData;
+	renderedPages: number | null;
+	fitRunning: boolean;
+	fitMessage: string | null;
+	onEdit: (edit: ResumeEdit) => void;
+	onFit?: (() => void) | undefined;
+}) {
+	const authored = Math.max(1, data.metadata.layout.pages.length);
+	const overflowing = renderedPages !== null && renderedPages > authored;
+	const label = `${authored} authored ${authored === 1 ? "page" : "pages"}`;
+
+	return (
+		<section
+			aria-label="Page overflow status"
+			className={cn(
+				"flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs",
+				overflowing ? "border-warn bg-warn-soft text-warn-text" : "border-line bg-sunken text-ink-2",
+			)}
+		>
+			<span aria-live="polite" className="flex-1">
+				{renderedPages === null
+					? "Waiting for the first completed PDF render."
+					: overflowing
+						? `Your resume runs to ${renderedPages} pages; ${label}.`
+						: `Fits within ${label}.`}
+				{fitMessage ? <span className="ms-2 font-medium">{fitMessage}</span> : null}
+			</span>
+			<button
+				type="button"
+				className="rounded-sm border border-line-2 px-2 py-1 text-ink-2 hover:bg-hover"
+				onClick={() => onEdit({ type: "add-page" })}
+			>
+				Add page
+			</button>
+			<button
+				type="button"
+				aria-label={`Fit content to ${authored} authored ${authored === 1 ? "page" : "pages"}`}
+				className="rounded-sm border border-line-2 px-2 py-1 text-ink-2 hover:bg-hover disabled:opacity-40"
+				disabled={!overflowing || fitRunning || !onFit}
+				onClick={onFit}
+			>
+				{fitRunning ? "Fitting…" : "Fit"}
+			</button>
+		</section>
 	);
 }
 
@@ -341,8 +499,13 @@ export function DesignPanel({
 	onPreviewTemplate,
 	thumbnailsEnabled = true,
 	thumbnailDependencies,
+	renderedPages = null,
+	fitRunning = false,
+	fitMessage = null,
+	onFit,
 }: DesignPanelProps) {
 	const [filter, setFilter] = useState<TemplateFilter>("all");
+	const [advancedOpen, setAdvancedOpen] = useState(false);
 	const onPreviewTemplateRef = useRef(onPreviewTemplate);
 	onPreviewTemplateRef.current = onPreviewTemplate;
 
@@ -352,10 +515,15 @@ export function DesignPanel({
 	}, []);
 
 	const entry = entryHeaderOf(data.metadata.design);
-	const accent = toHex(data.metadata.design.colors.primary);
 	const density =
 		(Object.entries(DENSITY_PRESETS) as [DesignDensity, (typeof DENSITY_PRESETS)[DesignDensity]][]).find(
 			([, preset]) => preset.gapX === data.metadata.page.gapX && preset.gapY === data.metadata.page.gapY,
+		)?.[0] ?? "custom";
+	const marginPreset =
+		(Object.entries(MARGIN_PRESETS) as [MarginPreset, (typeof MARGIN_PRESETS)[MarginPreset]][]).find(
+			([, preset]) =>
+				preset.marginX === data.metadata.page.marginX &&
+				preset.marginY === data.metadata.page.marginY,
 		)?.[0] ?? "custom";
 	const pairing =
 		FONT_PAIRINGS.find(
@@ -392,36 +560,24 @@ export function DesignPanel({
 		clearPreview();
 	};
 
-	const sections = useMemo(() => {
-		const known = new Map<string, SectionEntry>();
-		for (const [id, label] of Object.entries(SECTION_LABELS)) {
-			if (id === "summary") {
-				known.set(id, { id, label: data.summary.title || label, hidden: data.summary.hidden });
-				continue;
-			}
-			const section = (data.sections as Record<string, { title: string; hidden: boolean } | undefined>)[id];
-			if (!section) continue;
-			known.set(id, { id, label: section.title || label, hidden: section.hidden });
+	const jumpTo = (id: string) => {
+		if (id === "advanced") {
+			setAdvancedOpen(true);
+			// Wait for the collapsed contents to mount before aiming at them.
+			setTimeout(() => document.getElementById("design-advanced")?.scrollIntoView?.({ block: "start" }), 0);
+			return;
 		}
-		for (const custom of data.customSections) {
-			known.set(custom.id, {
-				id: custom.id,
-				label: custom.title || "Custom section",
-				hidden: custom.hidden,
-			});
-		}
+		document.getElementById(`design-${id}`)?.scrollIntoView?.({ block: "start" });
+	};
 
-		const byId = (id: string) => known.get(id);
-		const main = displayedSectionIds(data, "main").flatMap((id) => {
-			const section = byId(id);
-			return section ? [section] : [];
-		});
-		const sidebar = displayedSectionIds(data, "sidebar").flatMap((id) => {
-			const section = byId(id);
-			return section ? [section] : [];
-		});
-		return { main, sidebar };
-	}, [data]);
+	const groups = [
+		{ id: "template", label: "Template" },
+		{ id: "entries", label: "Entries" },
+		{ id: "type", label: "Type" },
+		{ id: "color", label: "Color" },
+		{ id: "page", label: "Page" },
+		{ id: "advanced", label: "Advanced" },
+	];
 
 	return (
 		<div className="flex flex-col gap-6">
@@ -430,8 +586,22 @@ export function DesignPanel({
 				Save changes.
 			</p>
 
-			<fieldset className="flex flex-col gap-3">
-				<legend className="mb-1 text-sm font-semibold text-ink">Template</legend>
+			<nav aria-label="Design groups" className="flex flex-wrap gap-1.5 border-b border-line pb-2">
+				{groups.map((group) => (
+					<button
+						key={group.id}
+						type="button"
+						aria-expanded={group.id === "advanced" ? advancedOpen : undefined}
+						aria-controls={group.id === "advanced" ? "design-advanced" : undefined}
+						onClick={() => jumpTo(group.id)}
+						className="h-8 rounded-sm px-3 text-[13px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+					>
+						{group.label}
+					</button>
+				))}
+			</nav>
+
+			<DesignGroup id="template" title="Template">
 				<p className="text-xs leading-5 text-ink-3">
 					Hover or focus a card to preview it on the live page. Click to apply it to this in-memory draft.
 				</p>
@@ -482,216 +652,254 @@ export function DesignPanel({
 						/>
 					))}
 				</fieldset>
-			</fieldset>
+			</DesignGroup>
 
-			<fieldset className="grid gap-4 sm:grid-cols-2">
-				<legend className="mb-2 text-sm font-semibold text-ink">Type &amp; accent</legend>
-
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Font pairing
-					<select
-						className={fieldClass}
-						value={pairing}
-						onChange={(event) => {
-							const chosen = FONT_PAIRINGS.find((candidate) => candidate.id === event.target.value);
-							if (chosen) onEdit({ type: "update-font-pairing", body: chosen.body, heading: chosen.heading });
-						}}
-					>
-						{pairing === "custom" ? (
-							<option value="custom" disabled>
-								Custom pairing
-							</option>
-						) : null}
-						{FONT_PAIRINGS.map((candidate) => (
-							<option key={candidate.id} value={candidate.id}>
-								{candidate.label}
-							</option>
+			<DesignGroup id="entries" title="Entries">
+				<div className="flex flex-col gap-2">
+					<div className="flex flex-wrap items-baseline justify-between gap-2">
+						<span className="text-xs font-medium text-ink-2">Header layout</span>
+						<span className="text-xs text-ink-3">Experience, Education, and more</span>
+					</div>
+					<fieldset aria-label="Header layout" className="m-0 grid grid-cols-2 gap-1.5 border-0 p-0 sm:grid-cols-3">
+						{ENTRY_LAYOUTS.map((option) => (
+							<button
+								key={option.id}
+								type="button"
+								aria-label={`${option.label} entry layout`}
+								aria-pressed={entry.layout === option.id}
+								onClick={() =>
+									onEdit({ type: "update-entry-layout", changes: { layout: option.id } })
+								}
+								className={cn(
+									"group/layout grid content-start gap-1.5 rounded-md border border-line bg-surface px-1.5 pb-1 pt-1.5 text-start transition-colors hover:bg-hover",
+									entry.layout === option.id && "border-accent ring-1 ring-accent",
+								)}
+							>
+								<span
+									data-entry-wireframe={option.id}
+									aria-hidden="true"
+									className="flex h-7 flex-col justify-center gap-1 px-0.5"
+								>
+									{option.wireframe}
+								</span>
+								<span className="text-center text-xs leading-4 text-ink-2">{option.label}</span>
+							</button>
 						))}
-					</select>
-				</label>
+					</fieldset>
+				</div>
 
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Text size
-					<input
-						className={fieldClass}
-						type="number"
-						min={6}
-						max={24}
-						step={0.5}
-						value={data.metadata.typography.body.fontSize}
-						onChange={(event) =>
-							onEdit({
-								type: "update-text-size",
-								bodySize: numberValue(event.target.value, data.metadata.typography.body.fontSize),
-							})
-						}
-					/>
-				</label>
-
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Accent color
-					<span className="flex items-center gap-2">
-						<input
-							type="color"
-							aria-label="Accent color"
-							className="h-9 w-12 rounded-sm border border-line-2 bg-surface"
-							value={accent}
-							onChange={(event) => onEdit({ type: "update-accent", color: fromHex(event.target.value) })}
-						/>
-						<code className="text-xs text-ink-3">{data.metadata.design.colors.primary}</code>
-					</span>
-				</label>
-			</fieldset>
-
-			<fieldset className="grid gap-4 sm:grid-cols-2">
-				<legend className="mb-2 text-sm font-semibold text-ink">Density &amp; entry layout</legend>
-
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Density
-					<select
-						className={fieldClass}
-						value={density}
-						onChange={(event) =>
-							onEdit({ type: "update-density", density: event.target.value as DesignDensity })
-						}
-					>
-						{density === "custom" ? (
-							<option value="custom" disabled>
-								Custom spacing
-							</option>
-						) : null}
-						{Object.keys(DENSITY_PRESETS).map((preset) => (
-							<option key={preset} value={preset}>
-								{titleCase(preset)}
-							</option>
-						))}
-					</select>
-				</label>
-
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Entry layout
-					<select
-						className={fieldClass}
-						value={entry.layout}
-						onChange={(event) =>
-							onEdit({
-								type: "update-entry-layout",
-								changes: { layout: event.target.value as EntryHeader["layout"] },
-							})
-						}
-					>
-						{entryHeaderLayouts.map((layout) => (
-							<option key={layout} value={layout}>
-								{titleCase(layout.replace("-", " "))}
-							</option>
-						))}
-					</select>
-				</label>
-
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Entry lead
-					<select
-						className={fieldClass}
-						value={entry.lead}
-						onChange={(event) =>
-							onEdit({
-								type: "update-entry-layout",
-								changes: { lead: event.target.value as EntryHeader["lead"] },
-							})
-						}
-					>
-						<option value="organization">Organization first</option>
-						<option value="role">Role first</option>
-					</select>
-				</label>
-
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Entry accent
-					<select
-						className={fieldClass}
-						value={entry.accent}
-						onChange={(event) =>
-							onEdit({
-								type: "update-entry-layout",
-								changes: { accent: event.target.value as EntryHeader["accent"] },
-							})
-						}
-					>
-						{entryHeaderAccents.map((accentName) => (
-							<option key={accentName} value={accentName}>
-								{titleCase(accentName)}
-							</option>
-						))}
-					</select>
-				</label>
-			</fieldset>
-
-			<fieldset className="grid gap-4 sm:grid-cols-2">
-				<legend className="mb-2 text-sm font-semibold text-ink">Page setup</legend>
-
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Page size
-					<select
-						className={fieldClass}
-						value={data.metadata.page.format}
-						onChange={(event) =>
-							onEdit({
-								type: "update-page",
-								changes: { format: event.target.value as "a4" | "letter" },
-							})
-						}
-					>
-						<option value="a4">A4</option>
-						<option value="letter">Letter</option>
-					</select>
-				</label>
-
-				<div className="grid grid-cols-2 gap-3">
+				<div className="grid gap-3 sm:grid-cols-2">
 					<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-						Horizontal margin
-						<input
+						Entry lead
+						<select
 							className={fieldClass}
-							type="number"
+							value={entry.lead}
+							onChange={(event) =>
+								onEdit({
+									type: "update-entry-layout",
+									changes: { lead: event.target.value as EntryHeader["lead"] },
+								})
+							}
+						>
+							<option value="organization">Organization first</option>
+							<option value="role">Role first</option>
+						</select>
+					</label>
+					<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+						Entry accent
+						<select
+							className={fieldClass}
+							value={entry.accent}
+							onChange={(event) =>
+								onEdit({
+									type: "update-entry-layout",
+									changes: { accent: event.target.value as EntryHeader["accent"] },
+								})
+							}
+						>
+							{entryHeaderAccents.map((accentName) => (
+								<option key={accentName} value={accentName}>
+									{titleCase(accentName)}
+								</option>
+							))}
+						</select>
+					</label>
+				</div>
+			</DesignGroup>
+
+			<DesignGroup id="type" title="Type">
+				<div className="grid gap-3 sm:grid-cols-2">
+					<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+						Font pairing
+						<select
+							className={fieldClass}
+							value={pairing}
+							onChange={(event) => {
+								const chosen = FONT_PAIRINGS.find(
+									(candidate) => candidate.id === event.target.value,
+								);
+								if (chosen) {
+									onEdit({
+										type: "update-font-pairing",
+										body: chosen.body,
+										heading: chosen.heading,
+									});
+								}
+							}}
+						>
+							{pairing === "custom" ? (
+								<option value="custom" disabled>
+									Custom pairing
+								</option>
+							) : null}
+							{FONT_PAIRINGS.map((candidate) => (
+								<option key={candidate.id} value={candidate.id}>
+									{candidate.label}
+								</option>
+							))}
+						</select>
+					</label>
+
+					<div className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+						Text size
+						<NumberInput
+							label="Text size"
+							min={6}
+							max={24}
+							step={0.5}
+							value={data.metadata.typography.body.fontSize}
+							onValueChange={(bodySize) => onEdit({ type: "update-text-size", bodySize })}
+						/>
+						<span className="text-xs font-normal text-ink-3">10–11 pt recommended</span>
+					</div>
+
+					<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+						Density
+						<select
+							className={fieldClass}
+							value={density}
+							onChange={(event) =>
+								onEdit({
+									type: "update-density",
+									density: event.target.value as DesignDensity,
+								})
+							}
+						>
+							{density === "custom" ? (
+								<option value="custom" disabled>
+									Custom spacing
+								</option>
+							) : null}
+							{Object.keys(DENSITY_PRESETS).map((preset) => (
+								<option key={preset} value={preset}>
+									{titleCase(preset)}
+								</option>
+							))}
+						</select>
+					</label>
+				</div>
+			</DesignGroup>
+
+			<DesignGroup id="color" title="Color">
+				<ColorGroup data={data} onEdit={onEdit} />
+			</DesignGroup>
+
+			<DesignGroup id="page" title="Page">
+				<div className="grid gap-3 sm:grid-cols-2">
+					<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+						Page size
+						<select
+							className={fieldClass}
+							value={data.metadata.page.format}
+							onChange={(event) =>
+								onEdit({
+									type: "update-page",
+									changes: { format: event.target.value as "a4" | "letter" },
+								})
+							}
+						>
+							<option value="a4">A4</option>
+							<option value="letter">Letter</option>
+						</select>
+					</label>
+
+					<div className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+						Margins
+						<fieldset aria-label="Margins" className="m-0 flex flex-wrap gap-1.5 border-0 p-0">
+							{(Object.entries(MARGIN_PRESETS) as [MarginPreset, (typeof MARGIN_PRESETS)[MarginPreset]][]).map(
+								([preset, values]) => (
+									<button
+										key={preset}
+										type="button"
+										aria-pressed={marginPreset === preset}
+										onClick={() =>
+											onEdit({
+												type: "update-page",
+												changes: {
+													marginX: values.marginX,
+													marginY: values.marginY,
+												},
+											})
+										}
+										className={cn(
+											"h-7 rounded-sm border px-2.5 text-xs capitalize",
+											marginPreset === preset
+												? "border-accent bg-accent-soft font-medium text-accent-text"
+												: "border-line-2 text-ink-2 hover:bg-hover",
+										)}
+									>
+										{preset}
+									</button>
+								),
+							)}
+						</fieldset>
+					</div>
+
+					<div className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+						Horizontal margin
+						<NumberInput
+							label="Horizontal margin"
 							min={0}
 							max={100}
 							value={data.metadata.page.marginX}
-							onChange={(event) =>
-								onEdit({
-									type: "update-page",
-									changes: { marginX: numberValue(event.target.value, data.metadata.page.marginX) },
-								})
-							}
+							onValueChange={(marginX) => onEdit({ type: "update-page", changes: { marginX } })}
 						/>
-					</label>
-					<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+						</div>
+					<div className="flex flex-col gap-1 text-xs font-medium text-ink-2">
 						Vertical margin
-						<input
-							className={fieldClass}
-							type="number"
+						<NumberInput
+							label="Vertical margin"
 							min={0}
 							max={100}
 							value={data.metadata.page.marginY}
-							onChange={(event) =>
-								onEdit({
-									type: "update-page",
-									changes: { marginY: numberValue(event.target.value, data.metadata.page.marginY) },
-								})
-							}
+							onValueChange={(marginY) => onEdit({ type: "update-page", changes: { marginY } })}
 						/>
-					</label>
+						</div>
 				</div>
-			</fieldset>
 
-			<fieldset className="flex flex-col gap-3">
-				<legend className="mb-1 text-sm font-semibold text-ink">Section order &amp; visibility</legend>
-				<p className="text-xs leading-5 text-ink-3">
-					Order is the first page's main and sidebar lists. Hidden sections keep their content and their place.
-				</p>
-				<div className="grid gap-3 md:grid-cols-2">
-					<SectionList title="Main column" column="main" entries={sections.main} onEdit={onEdit} />
-					<SectionList title="Sidebar column" column="sidebar" entries={sections.sidebar} onEdit={onEdit} />
+				<PageStatus
+					data={data}
+					renderedPages={renderedPages}
+					fitRunning={fitRunning}
+					fitMessage={fitMessage}
+					onEdit={onEdit}
+					onFit={onFit}
+				/>
+
+				<div className="flex flex-col gap-2">
+					<h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-ink-3">
+						Pages and sections
+					</h3>
+					<PageLayout data={data} onEdit={onEdit} showAddPage={false} />
 				</div>
-			</fieldset>
+			</DesignGroup>
+
+			<section id="design-advanced" aria-labelledby="design-advanced-title" className="flex flex-col gap-3">
+				<h2 id="design-advanced-title" className="text-sm font-semibold text-ink">
+					Advanced
+				</h2>
+				{advancedOpen ? <AdvancedGroup data={data} onEdit={onEdit} /> : null}
+			</section>
 		</div>
 	);
 }

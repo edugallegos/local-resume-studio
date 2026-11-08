@@ -439,3 +439,332 @@ describe("editResume preservation", () => {
 		expect(next.customSections).toEqual(original.customSections);
 	});
 });
+
+describe("editResume design and typography", () => {
+	it("writes exact body and heading typography plus hyphenation without touching other metadata", () => {
+		const original = fixture();
+		const snapshot = structuredClone(original);
+		const next = editResume(original, {
+			type: "update-typography",
+			body: { fontFamily: "Lato", fontWeights: ["400", "700"], fontSize: 11, lineHeight: 1.6 },
+			heading: { fontFamily: "Playfair Display", fontWeights: ["700"], fontSize: 15.5, lineHeight: 1.25 },
+			hyphenation: true,
+		});
+
+		expect(next.metadata.typography.body).toEqual({
+			fontFamily: "Lato",
+			fontWeights: ["400", "700"],
+			fontSize: 11,
+			lineHeight: 1.6,
+		});
+		expect(next.metadata.typography.heading).toEqual({
+			fontFamily: "Playfair Display",
+			fontWeights: ["700"],
+			fontSize: 15.5,
+			lineHeight: 1.25,
+		});
+		expect(next.metadata.typography.hyphenation).toBe(true);
+		expect(next.metadata.design).toEqual(original.metadata.design);
+		expect(next.metadata.layout).toEqual(original.metadata.layout);
+		expect((next as ResumeData & { "x-legacy": unknown })["x-legacy"]).toEqual({ nested: true });
+		expect(original).toEqual(snapshot);
+	});
+
+	it("preserves unknown typography fields while applying a partial body patch", () => {
+		const original = fixture() as ResumeData & {
+			metadata: ResumeData["metadata"] & { "x-typography-extra"?: unknown };
+		};
+		original.metadata["x-typography-extra"] = { keep: true };
+		(original.metadata.typography.body as unknown as Record<string, unknown>)["x-body-extra"] = "kept";
+
+		const next = editResume(original, {
+			type: "update-typography",
+			body: { fontSize: 11.5 },
+		}) as ResumeData & { metadata: ResumeData["metadata"] & { "x-typography-extra"?: unknown } };
+
+		expect(next.metadata.typography.body.fontSize).toBe(11.5);
+		expect((next.metadata.typography.body as unknown as Record<string, unknown>)["x-body-extra"]).toBe("kept");
+		expect(next.metadata["x-typography-extra"]).toEqual({ keep: true });
+	});
+
+	it("writes all three design colors and the level display", () => {
+		const original = fixture();
+		const next = editResume(
+			editResume(original, {
+				type: "update-design-colors",
+				colors: {
+					primary: "rgba(18, 52, 86, 1)",
+					text: "rgba(20, 20, 20, 1)",
+					background: "rgba(250, 250, 250, 1)",
+				},
+			}),
+			{ type: "update-level-design", changes: { type: "progress-bar", icon: "star" } },
+		);
+
+		expect(next.metadata.design.colors).toEqual({
+			primary: "rgba(18, 52, 86, 1)",
+			text: "rgba(20, 20, 20, 1)",
+			background: "rgba(250, 250, 250, 1)",
+		});
+		expect(next.metadata.design.level).toEqual({ type: "progress-bar", icon: "star" });
+		expect(next.metadata.design.entry).toEqual(original.metadata.design.entry);
+	});
+
+	it("writes page spacing, locale, date format, and visibility flags", () => {
+		const original = fixture();
+		const next = editResume(original, {
+			type: "update-page",
+			changes: {
+				gapX: 2.5,
+				gapY: 3.5,
+				marginX: 18,
+				marginY: 16,
+				locale: "de-DE",
+				dateFormat: "iso",
+				hideIcons: true,
+				hideLinkUnderline: true,
+				hideSectionIcons: false,
+			},
+		});
+
+		expect(next.metadata.page).toMatchObject({
+			gapX: 2.5,
+			gapY: 3.5,
+			marginX: 18,
+			marginY: 16,
+			locale: "de-DE",
+			dateFormat: "iso",
+			hideIcons: true,
+			hideLinkUnderline: true,
+			hideSectionIcons: false,
+		});
+		expect(next.metadata.page.format).toBe(original.metadata.page.format);
+	});
+
+	it("resets only visual defaults and keeps content, placement, locale, date format, style rules, and stylesheet", () => {
+		const original = fixture();
+		original.metadata.page.locale = "de-DE";
+		original.metadata.page.dateFormat = "iso";
+		original.metadata.page.format = "letter";
+		original.metadata.layout.sidebarSide = "right";
+		original.metadata.layout.sidebarWidth = 42;
+		original.metadata.styleRules = [
+			{
+				id: "rule-1",
+				enabled: true,
+				target: { scope: "global" },
+				slots: { heading: { color: "#123456" } },
+			},
+		] as never;
+		original.metadata.stylesheet = { version: 1, css: ".summary { color: red; }" } as never;
+		original.metadata.layout.pages.push({ fullWidth: true, main: ["awards"], sidebar: [] });
+		(original.metadata as unknown as Record<string, unknown>)["x-metadata-extra"] = { keep: true };
+		const snapshot = structuredClone(original);
+
+		const next = editResume(original, { type: "reset-design" });
+
+		expect(next.basics).toEqual(original.basics);
+		expect(next.sections).toEqual(original.sections);
+		expect(next.customSections).toEqual(original.customSections);
+		expect(next.metadata.layout.pages).toEqual(original.metadata.layout.pages);
+		expect(next.metadata.layout.sidebarSide).toBe("right");
+		expect(next.metadata.page.locale).toBe("de-DE");
+		expect(next.metadata.page.dateFormat).toBe("iso");
+		expect(next.metadata.page.format).toBe("letter");
+		expect(next.metadata.styleRules).toEqual(original.metadata.styleRules);
+		expect(next.metadata.stylesheet).toEqual(original.metadata.stylesheet);
+		expect((next.metadata as unknown as Record<string, unknown>)["x-metadata-extra"]).toEqual({ keep: true });
+		expect(next.metadata.typography).toEqual(defaultResumeData.metadata.typography);
+		expect(next.metadata.design).toEqual(defaultResumeData.metadata.design);
+		expect(next.metadata.page).toMatchObject({
+			gapX: defaultResumeData.metadata.page.gapX,
+			gapY: defaultResumeData.metadata.page.gapY,
+			marginX: defaultResumeData.metadata.page.marginX,
+			marginY: defaultResumeData.metadata.page.marginY,
+			hideIcons: defaultResumeData.metadata.page.hideIcons,
+			hideLinkUnderline: defaultResumeData.metadata.page.hideLinkUnderline,
+			hideSectionIcons: defaultResumeData.metadata.page.hideSectionIcons,
+		});
+		expect(original).toEqual(snapshot);
+	});
+});
+
+describe("editResume page layout", () => {
+	const sectionIdsAcrossPages = (data: ResumeData): string[] =>
+		data.metadata.layout.pages.flatMap((page) => [...page.main, ...page.sidebar]);
+
+	it("adds pages and refuses to remove the final page", () => {
+		const original = fixture();
+		const added = editResume(original, { type: "add-page" });
+
+		expect(added.metadata.layout.pages).toHaveLength(2);
+		expect(added.metadata.layout.pages[1]).toEqual({ fullWidth: false, main: [], sidebar: [] });
+
+		const removed = editResume(added, { type: "remove-page", pageIndex: 1 });
+		expect(removed.metadata.layout.pages).toHaveLength(1);
+		expect(editResume(removed, { type: "remove-page", pageIndex: 0 })).toBe(removed);
+	});
+
+	it("moves sections across pages and columns without duplicating or losing an id", () => {
+		const original = fixture();
+		const twoPages = editResume(original, { type: "add-page" });
+		const moved = editResume(twoPages, {
+			type: "move-section-to-slot",
+			sectionId: "experience",
+			pageIndex: 1,
+			column: "sidebar",
+		});
+
+		expect(moved.metadata.layout.pages[0]?.main).not.toContain("experience");
+		expect(moved.metadata.layout.pages[1]?.sidebar).toEqual(["experience"]);
+
+		const across = editResume(moved, {
+			type: "move-section-to-slot",
+			sectionId: "experience",
+			pageIndex: 0,
+			column: "main",
+			toIndex: 1,
+		});
+		expect(across.metadata.layout.pages[0]?.main[1]).toBe("experience");
+		expect(across.metadata.layout.pages[1]?.sidebar).toEqual([]);
+
+		const ids = sectionIdsAcrossPages(across);
+		expect(new Set(ids).size).toBe(ids.length);
+		expect(ids).toContain("experience");
+	});
+
+	it("removes every duplicate placement when a section is moved", () => {
+		const original = fixture();
+		const pages = original.metadata.layout.pages;
+		const firstPage = pages[0];
+		if (!firstPage) throw new Error("fixture page missing");
+		firstPage.main = ["summary", "experience", "experience", "education"];
+		firstPage.sidebar = ["experience", "skills"];
+		pages.push({
+			fullWidth: false,
+			main: ["experience", "projects"],
+			sidebar: ["experience"],
+		});
+
+		const moved = editResume(original, {
+			type: "move-section-to-slot",
+			sectionId: "experience",
+			pageIndex: 1,
+			column: "main",
+			toIndex: 0,
+		});
+
+		expect(moved.metadata.layout.pages[1]?.main[0]).toBe("experience");
+		const ids = sectionIdsAcrossPages(moved);
+		expect(ids.filter((id) => id === "experience")).toEqual(["experience"]);
+		expect(moved.metadata.layout.pages[0]?.main).toEqual(["summary", "education"]);
+		expect(moved.metadata.layout.pages[0]?.sidebar).toEqual(["skills"]);
+		expect(moved.metadata.layout.pages[1]?.sidebar).toEqual([]);
+	});
+
+	it("reorders within a column using the target index and keeps IDs unique", () => {
+		const original = fixture();
+		const moved = editResume(original, {
+			type: "move-section-to-slot",
+			sectionId: "summary",
+			pageIndex: 0,
+			column: "main",
+			toIndex: 2,
+		});
+
+		expect(moved.metadata.layout.pages[0]?.main.slice(0, 3)).toEqual([
+			"experience",
+			"education",
+			"summary",
+		]);
+		const ids = sectionIdsAcrossPages(moved);
+		expect(new Set(ids).size).toBe(ids.length);
+	});
+
+	it("moves sidebar sections into main when a page becomes full width and leaves them there when toggled back", () => {
+		const original = fixture();
+		const sidebar = [...(original.metadata.layout.pages[0]?.sidebar ?? [])];
+		const full = editResume(original, { type: "set-page-full-width", pageIndex: 0, fullWidth: true });
+
+		expect(full.metadata.layout.pages[0]?.fullWidth).toBe(true);
+		expect(full.metadata.layout.pages[0]?.sidebar).toEqual([]);
+		for (const id of sidebar) expect(full.metadata.layout.pages[0]?.main).toContain(id);
+		expect(new Set(sectionIdsAcrossPages(full)).size).toBe(sectionIdsAcrossPages(full).length);
+
+		const back = editResume(full, { type: "set-page-full-width", pageIndex: 0, fullWidth: false });
+		expect(back.metadata.layout.pages[0]?.fullWidth).toBe(false);
+		expect(back.metadata.layout.pages[0]?.sidebar).toEqual([]);
+		for (const id of sidebar) expect(back.metadata.layout.pages[0]?.main).toContain(id);
+	});
+
+	it("moves a removed page's sections onto the surviving page exactly once", () => {
+		const original = fixture();
+		const twoPages = editResume(original, { type: "add-page" });
+		const moved = editResume(twoPages, {
+			type: "move-section-to-slot",
+			sectionId: "experience",
+			pageIndex: 1,
+			column: "main",
+		});
+		const removed = editResume(moved, { type: "remove-page", pageIndex: 1 });
+
+		expect(removed.metadata.layout.pages).toHaveLength(1);
+		expect(removed.metadata.layout.pages[0]?.main.filter((id) => id === "experience")).toHaveLength(1);
+		const ids = sectionIdsAcrossPages(removed);
+		expect(new Set(ids).size).toBe(ids.length);
+		expect(ids).toContain("experience");
+	});
+
+	it("writes sidebar width with schema bounds and clears or sets the side", () => {
+		const original = fixture();
+		expect(editResume(original, { type: "set-sidebar-width", width: 42 }).metadata.layout.sidebarWidth).toBe(42);
+		expect(editResume(original, { type: "set-sidebar-width", width: 2 }).metadata.layout.sidebarWidth).toBe(10);
+		expect(editResume(original, { type: "set-sidebar-width", width: 99 }).metadata.layout.sidebarWidth).toBe(50);
+
+		const right = editResume(original, { type: "set-sidebar-side", side: "right" });
+		expect(right.metadata.layout.sidebarSide).toBe("right");
+		const cleared = editResume(right, { type: "set-sidebar-side", side: undefined });
+		expect(cleared.metadata.layout).not.toHaveProperty("sidebarSide");
+	});
+
+	it("restores only the fit-related metadata captured before a failed fit", () => {
+		const original = fixture();
+		original.metadata.page.gapX = 7;
+		original.metadata.page.gapY = 9;
+		original.metadata.page.marginX = 22;
+		original.metadata.page.marginY = 20;
+		original.metadata.typography.body.fontSize = 11.5;
+		original.metadata.typography.body.lineHeight = 1.7;
+		original.metadata.typography.heading.fontSize = 16;
+		original.metadata.typography.heading.lineHeight = 1.4;
+		const snapshot = {
+			page: {
+				gapX: original.metadata.page.gapX,
+				gapY: original.metadata.page.gapY,
+				marginX: original.metadata.page.marginX,
+				marginY: original.metadata.page.marginY,
+			},
+			typography: {
+				body: {
+					fontSize: original.metadata.typography.body.fontSize,
+					lineHeight: original.metadata.typography.body.lineHeight,
+				},
+				heading: {
+					fontSize: original.metadata.typography.heading.fontSize,
+					lineHeight: original.metadata.typography.heading.lineHeight,
+				},
+			},
+		};
+
+		const changed = editResume(original, { type: "update-density", density: "compact" });
+		const restored = editResume(changed, { type: "restore-fit-state", state: snapshot });
+		expect(restored.metadata.page.gapX).toBe(7);
+		expect(restored.metadata.page.gapY).toBe(9);
+		expect(restored.metadata.page.marginX).toBe(22);
+		expect(restored.metadata.page.marginY).toBe(20);
+		expect(restored.metadata.typography.body.fontSize).toBe(11.5);
+		expect(restored.metadata.typography.heading.fontSize).toBe(16);
+		expect(restored.metadata.page.locale).toBe(original.metadata.page.locale);
+		expect(restored.metadata.layout).toEqual(original.metadata.layout);
+	});
+});

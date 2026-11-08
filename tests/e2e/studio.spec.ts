@@ -198,4 +198,101 @@ test.describe("local editor round trips", () => {
 		await expect(conflict).toHaveCount(0);
 		expect(saves).toBe(2);
 	});
+
+	test("reloads the saved authored page layout after moving Experience to page 2", async ({ page }) => {
+		await openLibrary(page);
+		await page.getByLabel("Import resume JSON").setInputFiles({
+			name: "design-parity.json",
+			mimeType: "application/json",
+			buffer: await readFile(fixturePath),
+		});
+
+		const open = page.getByRole("button", { name: "Open Ada Lovelace (Synthetic)" });
+		await expect(open).toBeVisible();
+		await open.click();
+		await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace (Synthetic)");
+
+		await page.getByRole("tab", { name: "Design" }).click();
+		const groups = page.getByRole("navigation", { name: "Design groups" });
+		await expect(groups).toBeVisible();
+		for (const name of ["Template", "Entries", "Type", "Color", "Page", "Advanced"]) {
+			await expect(groups.getByRole("button", { name, exact: true })).toBeVisible();
+		}
+		// The status may still be waiting for its first render; the authored layout below is the source of truth.
+		await expect(page.locator('section[aria-label="Page overflow status"]')).toBeVisible();
+
+		await page.getByRole("button", { name: "Add page" }).click();
+		await expect(page.getByRole("heading", { name: "Page 2", level: 4 })).toBeVisible();
+
+		await page.getByLabel("Move Experience page").selectOption("1:main");
+		const pageTwo = page.locator('section[data-page-index="1"]');
+		await expect(pageTwo.getByRole("checkbox", { name: "Show Experience" })).toBeVisible();
+		await expect(
+			page.locator('section[data-page-index="0"]').getByRole("checkbox", { name: "Show Experience" }),
+		).toHaveCount(0);
+
+		// Authored layout changes stay in the draft until the explicit Save action.
+		await expect(page.getByText("Unsaved changes")).toBeVisible();
+		await expect(page.getByRole("button", { name: "Save changes" })).toBeEnabled();
+
+		const beforeSave = JSON.parse(
+			await readFile(join(resumesDir, "design-parity.json"), "utf8"),
+		) as {
+			metadata: { layout: { pages: { main: string[]; sidebar: string[] }[] } };
+		};
+		const persistedPages = beforeSave.metadata.layout.pages;
+		expect(persistedPages).toHaveLength(1);
+		const persistedExperiencePlacements = persistedPages.flatMap((authoredPage, pageIndex) =>
+			[...authoredPage.main, ...authoredPage.sidebar]
+				.filter((sectionId) => sectionId === "experience")
+				.map(() => pageIndex),
+		);
+		expect(persistedExperiencePlacements).toEqual([0]);
+
+		await saveDraft(page);
+
+		const stored = JSON.parse(await readFile(join(resumesDir, "design-parity.json"), "utf8")) as {
+			metadata: { layout: { pages: { main: string[]; sidebar: string[] }[] } };
+		};
+		const pages = stored.metadata.layout.pages;
+		const experiencePlacements = pages.flatMap((authoredPage, pageIndex) =>
+			[...authoredPage.main, ...authoredPage.sidebar]
+				.filter((sectionId) => sectionId === "experience")
+				.map(() => pageIndex),
+		);
+		expect(experiencePlacements).toEqual([1]);
+
+		await page.reload();
+		await page.getByRole("button", { name: "Open Ada Lovelace (Synthetic)" }).click();
+		await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace (Synthetic)");
+		await page.getByRole("tab", { name: "Design" }).click();
+		await expect(page.getByRole("heading", { name: "Page 2", level: 4 })).toBeVisible();
+		await expect(
+			page.locator('section[data-page-index="1"]').getByRole("checkbox", { name: "Show Experience" }),
+		).toBeVisible();
+		await expect(page.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+		// Narrow/mobile layout: the authored page row and its controls stay reachable and usable.
+		await page.setViewportSize({ width: 390, height: 844 });
+		const narrowPageTwo = page.locator('section[data-page-index="1"]');
+		await expect(
+			narrowPageTwo.getByRole("checkbox", { name: "Show Experience" }),
+		).toBeVisible();
+
+		const experiencePageSelector = page.getByLabel("Move Experience page");
+		await expect(experiencePageSelector).toBeVisible();
+		await expect(experiencePageSelector).toBeEnabled();
+		await expect(experiencePageSelector).toHaveValue("1:main");
+
+		await expect(page.locator('section[aria-label="Page overflow status"]')).toBeVisible();
+		const addPage = page.getByRole("button", { name: "Add page" });
+		await expect(addPage).toBeVisible();
+		await addPage.click();
+		await expect(page.getByRole("heading", { name: "Page 3", level: 4 })).toBeVisible();
+		await expect(
+			narrowPageTwo.getByRole("checkbox", { name: "Show Experience" }),
+		).toBeVisible();
+		// The isolated test draft is intentionally left unsaved; the saved file still has two pages.
+		await expect(page.getByRole("button", { name: "Save changes" })).toBeEnabled();
+	});
 });
