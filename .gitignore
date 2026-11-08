@@ -8,6 +8,13 @@ coverage/
 data/
 apps/studio/dist/
 
+# Generated PDFs and Playwright/test artifacts.
+*.pdf
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # Local environment and secrets.
 .env*
 !.env.example
