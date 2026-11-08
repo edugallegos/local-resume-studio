@@ -1,9 +1,11 @@
 import type { StoredResume } from "@local-resume/store/types";
+import type { PageMapTarget } from "@reactive-resume/pdf/page-map";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { Badge } from "@reactive-resume/ui/components/badge";
-import { useMemo, useReducer, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createResumeApiClient, isResumeConflictError, type ResumeApiClient } from "./api/client";
 import { type EditorTab, EditorShell } from "./components/editor-shell";
+import type { CheckIssue } from "./features/check/issue-model";
 import { downloadPdf as archiveAndDownloadPdf, type SavePdfFile } from "./features/export/download-pdf";
 import { renderResumePdf, type ResumePdfRender } from "./features/export/render-resume-pdf";
 import { ResumeLibrary } from "./features/library/resume-library";
@@ -49,6 +51,16 @@ export function App({
 	const [renderedPdf, setRenderedPdf] = useState<ResumePdfRender | null>(null);
 	const [exportingPdf, setExportingPdf] = useState(false);
 	const [exportMessage, setExportMessage] = useState<string | null>(null);
+	const [writeFocus, setWriteFocus] = useState<{ fieldId: string; token: number } | null>(null);
+	const focusToken = useRef(0);
+
+	useEffect(() => {
+		if (activeTab !== "write" || !writeFocus) return;
+		const target = document.getElementById(writeFocus.fieldId);
+		if (!target) return;
+		target.scrollIntoView?.({ block: "center" });
+		if (target instanceof HTMLElement) target.focus();
+	}, [activeTab, writeFocus]);
 
 	const handleOpen = (resume: StoredResume): void => {
 		// Belts and braces: the library blocks these transitions too, but the editor never replaces a
@@ -79,6 +91,17 @@ export function App({
 		setRenderedPdf(null);
 		setExportMessage(null);
 		dispatch({ type: "edit", data: editResume(state.data, edit) });
+	};
+
+	const handleReviewIssue = (issue: CheckIssue): void => {
+		if (!issue.editTarget) return;
+		focusToken.current += 1;
+		setWriteFocus({ fieldId: issue.editTarget.fieldId, token: focusToken.current });
+		setActiveTab("write");
+	};
+
+	const handleShowOnPdf = (target: PageMapTarget): void => {
+		dispatch({ type: "select-issue", target });
 	};
 
 	const handleSave = async (): Promise<void> => {
@@ -192,6 +215,9 @@ export function App({
 				exportingPdf={exportingPdf}
 				exportMessage={exportMessage}
 				onDismissExportMessage={() => setExportMessage(null)}
+				selectedIssue={state.selectedIssue}
+				onReviewIssue={handleReviewIssue}
+				onShowOnPdf={handleShowOnPdf}
 			/>
 		);
 	}

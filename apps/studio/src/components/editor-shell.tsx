@@ -1,4 +1,5 @@
 import type { StoredResume } from "@local-resume/store/types";
+import type { PageMapTarget } from "@reactive-resume/pdf/page-map";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { Badge } from "@reactive-resume/ui/components/badge";
 import { Button } from "@reactive-resume/ui/components/button";
@@ -7,6 +8,8 @@ import { Separator } from "@reactive-resume/ui/components/separator";
 import { Spinner } from "@reactive-resume/ui/components/spinner";
 import { cn } from "@reactive-resume/utils/style";
 import type { ReactNode } from "react";
+import { CheckPanel } from "../features/check/check-panel";
+import type { CheckIssue } from "../features/check/issue-model";
 import { DesignPanel } from "../features/design/design-panel";
 import type { ResumePdfRender } from "../features/export/render-resume-pdf";
 import { type LoadPdfDocument, PdfPreview } from "../features/preview/pdf-preview";
@@ -37,6 +40,9 @@ export type EditorShellProps = {
 	exportingPdf?: boolean;
 	exportMessage?: string | null;
 	onDismissExportMessage?: () => void;
+	selectedIssue?: PageMapTarget | null;
+	onReviewIssue: (issue: CheckIssue) => void;
+	onShowOnPdf: (target: PageMapTarget) => void;
 };
 
 type TabDefinition = {
@@ -68,7 +74,7 @@ const tabs: TabDefinition[] = [
 		label: "Check",
 		icon: "list-checks",
 		description:
-			"The deterministic local score, categorized issues, job-description match, and exported-PDF analysis arrive in Task 7. No remote service is involved.",
+			"Run the deterministic local ATS score, inspect categorized issues with direct Write and PDF targets, compare a pasted posting, and analyze the generated PDF on demand. No remote service is involved.",
 		items: ["Live score & issues", "Pasted job description", "Exported PDF analysis"],
 	},
 ];
@@ -165,6 +171,9 @@ export function EditorShell({
 	exportingPdf = false,
 	exportMessage = null,
 	onDismissExportMessage,
+	selectedIssue = null,
+	onReviewIssue,
+	onShowOnPdf,
 }: EditorShellProps) {
 	const canSave = Boolean(
 		state.data && state.selectedId && state.etag && state.dirty && state.status !== "saving",
@@ -278,7 +287,8 @@ export function EditorShell({
 						const selected = tab.id === activeTab;
 						const isWritePanel = tab.id === "write";
 						const isDesignPanel = tab.id === "design";
-						const isNative = isWritePanel || isDesignPanel;
+						const isCheckPanel = tab.id === "check";
+						const isNative = isWritePanel || isDesignPanel || isCheckPanel;
 						return (
 							<section
 								key={tab.id}
@@ -317,26 +327,22 @@ export function EditorShell({
 										</div>
 									</div>
 								) : (
-									<>
-										<ul className="mt-6 grid gap-3 sm:grid-cols-3">
-											{tab.items.map((item, index) => (
-												<li
-													key={item}
-													className="rounded-md border border-line bg-sunken/60 px-3 py-3 text-xs leading-5 text-ink-2"
-												>
-													<span className="mb-2 flex size-6 items-center justify-center rounded-sm bg-surface text-ink-3 ring-1 ring-line">
-														{index + 1}
-													</span>
-													{item}
-												</li>
-											))}
-										</ul>
-
-										<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
+									<div className="mt-6 flex flex-1 flex-col">
+										{state.data ? (
+											<CheckPanel
+												data={state.data}
+												onReviewIssue={onReviewIssue}
+												onShowOnPdf={onShowOnPdf}
+												selectedIssue={selectedIssue}
+												renderPdf={renderPdf}
+												loadPdfDocument={loadPdfDocument}
+											/>
+										) : null}
+										<div className="mt-6 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
 											<Icon name="info" />
-											<span>Controls arrive in Task 7; the preview already uses the same rendered PDF.</span>
+											<span>Checks run locally against this draft; nothing is uploaded or sent to an AI service.</span>
 										</div>
-									</>
+									</div>
 								)}
 							</section>
 						);
@@ -407,6 +413,7 @@ export function EditorShell({
 								data={state.data}
 								renderPdf={renderPdf}
 								loadDocument={loadPdfDocument}
+								selectedIssue={selectedIssue}
 								onRendered={onPdfRendered}
 							/>
 						) : null}

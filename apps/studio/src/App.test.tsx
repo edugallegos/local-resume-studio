@@ -2,7 +2,7 @@
 import type { ResumeListItem, StoredResume } from "@local-resume/store/types";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -304,6 +304,66 @@ describe("App dirty draft navigation", () => {
 		await user.click(screen.getByRole("button", { name: /return to editor/i }));
 		expect(await screen.findByLabelText("Full name")).toHaveProperty("value", "Ada Draft Kept");
 		expect(read).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("App Check workflow", () => {
+	it("reviews an issue in Write and highlights the selected target on the PDF preview", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const data = syntheticResume();
+		data.basics.name = "";
+		const stored = storedResume(item, data);
+		const client = makeClient({ list: vi.fn(async () => [item]), read: vi.fn(async () => stored) });
+		const renderPdf = vi.fn(async () => ({
+			blob: new Blob(["%PDF-1.7 preview"], { type: "application/pdf" }),
+			pageMap: {
+				pages: [{ width: 595, height: 842 }],
+				nodes: [{ kind: "header" as const, key: "page-1/header", page: 0, x: 20, y: 20, width: 220, height: 40 }],
+			},
+			missingFonts: [],
+			lostCharacters: [],
+		}));
+		const loadPdfDocument = async () => ({
+			numPages: 1,
+			getPage: async () => ({
+				getViewport: () => ({ width: 595, height: 842 }),
+				render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+			}),
+		});
+
+		render(<App client={client} renderPdf={renderPdf} loadPdfDocument={loadPdfDocument} />);
+		await openResume(user);
+
+		await user.click(screen.getByRole("tab", { name: /check/i }));
+		expect(await screen.findByTestId("ats-score")).toBeTruthy();
+
+		const issue = screen
+			.getByTestId("check-issues")
+			.querySelector('[data-issue-code="MISSING_NAME"]') as HTMLElement;
+		expect(issue).not.toBeNull();
+
+		await user.click(
+			within(issue).getByRole("button", { name: "Review Your name is missing in Write" }),
+		);
+		expect(screen.getByRole("tab", { name: /write/i }).getAttribute("aria-selected")).toBe("true");
+		const nameInput = screen.getByLabelText("Full name") as HTMLInputElement;
+		await waitFor(() => expect(document.activeElement).toBe(nameInput));
+
+		await user.click(screen.getByRole("tab", { name: /check/i }));
+		const missingName = screen
+			.getByTestId("check-issues")
+			.querySelector('[data-issue-code="MISSING_NAME"]') as HTMLElement;
+		await user.click(
+			within(missingName).getByRole("button", { name: "Show Your name is missing on PDF" }),
+		);
+
+		await screen.findByLabelText("PDF page 1");
+		await waitFor(() =>
+			expect(
+				document.querySelector('[data-page-map-target="header"][data-selected="true"]'),
+			).not.toBeNull(),
+		);
 	});
 });
 

@@ -1,3 +1,4 @@
+import type { PageMapTarget } from "@reactive-resume/pdf/page-map";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 
 export type EditorStatus = "idle" | "loading" | "saving" | "saved" | "conflict" | "error";
@@ -9,6 +10,8 @@ export type EditorState = {
 	etag: string | null;
 	dirty: boolean;
 	status: EditorStatus;
+	/** The Check issue target currently highlighted on the PDF preview, if any. */
+	selectedIssue: PageMapTarget | null;
 };
 
 export type EditorAction =
@@ -20,6 +23,7 @@ export type EditorAction =
 	| { type: "save-error" }
 	| { type: "clear-error" }
 	| { type: "load-error" }
+	| { type: "select-issue"; target: PageMapTarget | null }
 	| { type: "reset" };
 
 export const initialEditorState: EditorState = {
@@ -28,6 +32,7 @@ export const initialEditorState: EditorState = {
 	etag: null,
 	dirty: false,
 	status: "idle",
+	selectedIssue: null,
 };
 
 /**
@@ -45,6 +50,7 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 				etag: action.etag,
 				dirty: false,
 				status: "saved",
+				selectedIssue: null,
 			};
 
 		case "edit":
@@ -52,9 +58,13 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 				...state,
 				data: action.data,
 				dirty: true,
+				selectedIssue: null,
 				status:
 					state.status === "conflict" ? "conflict" : state.status === "saving" ? "saving" : "idle",
 			};
+
+		case "select-issue":
+			return { ...state, selectedIssue: action.target };
 
 		case "save-start":
 			return { ...state, status: "saving" };

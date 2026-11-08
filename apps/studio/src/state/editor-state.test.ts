@@ -19,6 +19,7 @@ const loadedState = (): EditorState => ({
 	etag: "etag-1",
 	dirty: false,
 	status: "saved",
+	selectedIssue: null,
 });
 
 describe("editorReducer", () => {
@@ -29,6 +30,7 @@ describe("editorReducer", () => {
 			etag: null,
 			dirty: false,
 			status: "idle",
+			selectedIssue: null,
 		});
 	});
 
@@ -47,6 +49,7 @@ describe("editorReducer", () => {
 			etag: "etag-1",
 			dirty: false,
 			status: "saved",
+			selectedIssue: null,
 		});
 	});
 
@@ -158,6 +161,15 @@ describe("editorReducer", () => {
 		expect(failed.data).toBe(data);
 		expect(failed.dirty).toBe(true);
 		expect(failed.selectedId).toBe("ada-lovelace");
+	});
+
+	it("selects a Check issue target and clears it on the next edit", () => {
+		const target = { kind: "item", sectionId: "experience", itemId: "exp-1" } as const;
+		const selected = editorReducer(loadedState(), { type: "select-issue", target });
+		expect(selected.selectedIssue).toEqual(target);
+
+		const edited = editorReducer(selected, { type: "edit", data: syntheticResume("Ada Draft") });
+		expect(edited.selectedIssue).toBeNull();
 	});
 
 	it("keeps the exact draft, ETag, and dirty flag after a non-conflict save error", () => {
