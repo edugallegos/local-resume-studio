@@ -21,6 +21,13 @@ export type CreateResumePdfBlobOptions = {
 	 * Forme didn't name them. Not called when every character rendered.
 	 */
 	onLostCharacters?: ((characters: string[]) => void) | undefined;
+	/**
+	 * Local Resume Studio addition: when true, a failed font download is reported through `onMissingFonts` and the
+	 * render continues with Forme's built-in fallback. Omitted or false keeps upstream behaviour and throws.
+	 */
+	allowMissingFonts?: boolean | undefined;
+	/** Receives the unique font families that could not be downloaded when `allowMissingFonts` is true. */
+	onMissingFonts?: ((families: string[]) => void) | undefined;
 };
 
 // Fonts cut to each document's characters and encoded once: whole CJK faces, which Forme encodes byte by byte on
@@ -71,8 +78,12 @@ export const createResumePdfBlob = async ({
 		},
 		{ ...input, data },
 	);
-	assertPdfFonts(result);
-	const { pdf, pageMap, warnings } = result;
+	const { pdf, pageMap, warnings, missingFonts } = result;
+	// Local Resume Studio addition: an explicitly opted-in preview keeps going with Forme's fallback and reports
+	// the families; the default path keeps the upstream refusal to print in other fonts.
+	if (input.allowMissingFonts === true) {
+		if (missingFonts.length > 0) input.onMissingFonts?.([...new Set(missingFonts)]);
+	} else assertPdfFonts(result);
 	onPageMap?.(pageMap);
 	const lost = lostCharacters(warnings);
 	if (lost) onLostCharacters?.(lost);

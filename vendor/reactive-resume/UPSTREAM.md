@@ -56,11 +56,25 @@ The schema files `career.ts`, `ai-usage.ts`, and `applications/data.ts` are reta
 Those files contain schema declarations, not application-tracking behaviour; no application service, route, store, or UI
 was copied.
 
+## Local source change: optional missing-font fallback
+
+Exactly one upstream source file is edited in this snapshot: `packages/pdf/src/browser.tsx` (the upstream path relative
+to the pinned checkout). Local Resume Studio must keep the editor usable when a font download is unavailable, while the
+renderer's own default must stay unchanged for every other caller.
+
+- Added optional `allowMissingFonts` and `onMissingFonts` fields to `CreateResumePdfBlobOptions`.
+- When `allowMissingFonts` is omitted or `false`, the existing `assertPdfFonts(result)` call still throws, exactly as
+  upstream does, so a resume is never silently printed in other fonts.
+- When it is explicitly `true`, the render continues with Forme's built-in fallback; `onMissingFonts` receives the
+  unique font families that could not be downloaded. Lost characters are still reported independently through
+  `onLostCharacters`.
+- No other source file in this vendor tree is modified. The change is deliberately limited to the browser entry point
+  used by Local Resume Studio; the server/native adapters were not copied.
+
 ## Local manifest and import changes
 
-No upstream source file was edited in this snapshot. Changes within the vendor tree are limited to the six vendored
-`package.json` manifests and one added stylesheet. Repository-root manifests pin the test, typecheck, lint, and build
-toolchain.
+Changes within the vendor tree are limited to the six vendored `package.json` manifests, one added stylesheet, and the
+single source change documented above. Repository-root manifests pin the test, typecheck, lint, and build toolchain.
 
 - Every vendored package remains `private` and `type: "module"` with its pinned package name. Upstream catalog references
   (`catalog:`) and workspace dev-tooling references (`@reactive-resume/config`, `tsrs`, `vite-plus`) were replaced with

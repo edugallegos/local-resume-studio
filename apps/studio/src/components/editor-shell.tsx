@@ -1,4 +1,5 @@
 import type { StoredResume } from "@local-resume/store/types";
+import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { Badge } from "@reactive-resume/ui/components/badge";
 import { Button } from "@reactive-resume/ui/components/button";
 import { Icon, type IconName } from "@reactive-resume/ui/components/icon";
@@ -6,6 +7,9 @@ import { Separator } from "@reactive-resume/ui/components/separator";
 import { Spinner } from "@reactive-resume/ui/components/spinner";
 import { cn } from "@reactive-resume/utils/style";
 import type { ReactNode } from "react";
+import { DesignPanel } from "../features/design/design-panel";
+import type { ResumePdfRender } from "../features/export/render-resume-pdf";
+import { type LoadPdfDocument, PdfPreview } from "../features/preview/pdf-preview";
 import { WritePanel } from "../features/write/write-panel";
 import type { ResumeEdit } from "../features/write/resume-edits";
 import type { EditorState } from "../state/editor-state";
@@ -23,6 +27,16 @@ export type EditorShellProps = {
 	/** Conflict or save failure text. The draft is never replaced by this message. */
 	saveMessage?: string | null;
 	onDismissSaveMessage?: () => void;
+	/** PDF rendering engine; tests inject a deterministic adapter. */
+	renderPdf?: (data: ResumeData) => Promise<ResumePdfRender>;
+	loadPdfDocument?: LoadPdfDocument;
+	/** Receives the exact Blob the preview shows, or null when a render fails. */
+	onPdfRendered?: (result: ResumePdfRender | null) => void;
+	onDownloadPdf?: () => void;
+	pdfReady?: boolean;
+	exportingPdf?: boolean;
+	exportMessage?: string | null;
+	onDismissExportMessage?: () => void;
 };
 
 type TabDefinition = {
@@ -46,7 +60,7 @@ const tabs: TabDefinition[] = [
 		label: "Design",
 		icon: "palette",
 		description:
-			"Template, typography, density, margins, accent color, section order, and visibility controls arrive in Task 6. The preview column is already persistent.",
+			"Choose among all 18 pinned templates, pair body and heading fonts, tune density and entry layout, set page size, margins, text size, accent color, and arrange section order and visibility.",
 		items: ["All 18 pinned templates", "Font pairing & page setup", "Section order & visibility"],
 	},
 	{
@@ -133,17 +147,6 @@ function SaveState({ state, saveMessage }: { state: EditorState; saveMessage?: s
 	);
 }
 
-const SkeletonLine = ({ width = "full" }: { width?: "full" | "long" | "medium" | "short" }) => (
-	<span
-		className={cn(
-			"studio-page__line",
-			width === "long" && "studio-page__line--long",
-			width === "medium" && "studio-page__line--medium",
-			width === "short" && "studio-page__line--short",
-		)}
-	/>
-);
-
 export function EditorShell({
 	state,
 	resume,
@@ -154,12 +157,19 @@ export function EditorShell({
 	onSave,
 	saveMessage = null,
 	onDismissSaveMessage,
+	renderPdf,
+	loadPdfDocument,
+	onPdfRendered,
+	onDownloadPdf,
+	pdfReady = false,
+	exportingPdf = false,
+	exportMessage = null,
+	onDismissExportMessage,
 }: EditorShellProps) {
 	const canSave = Boolean(
 		state.data && state.selectedId && state.etag && state.dirty && state.status !== "saving",
 	);
 	const fullName = state.data?.basics.name.trim() || "Untitled resume";
-	const headline = state.data?.basics.headline.trim() || "Add a headline in Write";
 	const label = resume?.label ?? state.selectedId ?? "no-file";
 	const updatedAt = formatUpdatedAt(resume?.updatedAt);
 
@@ -267,6 +277,8 @@ export function EditorShell({
 					{tabs.map((tab) => {
 						const selected = tab.id === activeTab;
 						const isWritePanel = tab.id === "write";
+						const isDesignPanel = tab.id === "design";
+						const isNative = isWritePanel || isDesignPanel;
 						return (
 							<section
 								key={tab.id}
@@ -281,8 +293,8 @@ export function EditorShell({
 										<p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink-3">Workspace</p>
 										<h2 className="mt-1 font-display text-2xl leading-tight text-ink">{tab.label}</h2>
 									</div>
-									<Badge variant={isWritePanel ? "accent" : "info"}>
-										{isWritePanel ? "Native editing" : "Placeholder"}
+									<Badge variant={isNative ? "accent" : "info"}>
+										{isNative ? "Native editing" : "Placeholder"}
 									</Badge>
 								</div>
 
@@ -294,6 +306,14 @@ export function EditorShell({
 										<div className="mt-6 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
 											<Icon name="info" />
 											<span>Edits stay in this in-memory draft until you choose Save changes.</span>
+										</div>
+									</div>
+								) : isDesignPanel ? (
+									<div className="mt-6 flex flex-1 flex-col">
+										{state.data ? <DesignPanel data={state.data} onEdit={onEdit} /> : null}
+										<div className="mt-6 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
+											<Icon name="info" />
+											<span>Design edits use the same in-memory draft and Save changes flow.</span>
 										</div>
 									</div>
 								) : (
@@ -314,7 +334,7 @@ export function EditorShell({
 
 										<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
 											<Icon name="info" />
-											<span>Controls are intentionally disabled in this task so the shell stays honest.</span>
+											<span>Controls arrive in Task 7; the preview already uses the same rendered PDF.</span>
 										</div>
 									</>
 								)}
@@ -330,66 +350,66 @@ export function EditorShell({
 					<div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-surface px-4 py-3">
 						<div>
 							<h2 id="preview-title" className="text-sm font-semibold text-ink">
-								Page preview
+								Live PDF preview
 							</h2>
-							<p className="mt-0.5 text-xs text-ink-3">The paper area stays visible while you work.</p>
+							<p className="mt-0.5 text-xs text-ink-3">
+								The PDF shown here is the same Blob the download archives.
+							</p>
 						</div>
-						<Badge variant="outline">Preview placeholder</Badge>
+						<div className="flex flex-wrap items-center gap-2">
+							<Badge variant={pdfReady ? "accent" : "outline"}>{pdfReady ? "PDF ready" : "Rendering"}</Badge>
+							<Button
+								variant="secondary"
+								size="sm"
+								onClick={onDownloadPdf}
+								disabled={!pdfReady || exportingPdf}
+								loading={exportingPdf}
+								aria-label="Download PDF"
+							>
+								<Icon name="download-simple" />
+								Download PDF
+							</Button>
+						</div>
 					</div>
 
+					{exportMessage ? (
+						<div
+							role={exportMessage.startsWith("Export failed") ? "alert" : "status"}
+							className={cn(
+								"flex items-start gap-3 border-b px-4 py-2.5 text-sm",
+								exportMessage.startsWith("Export failed")
+									? "border-danger bg-danger-soft text-danger-text"
+									: "border-line bg-sunken text-ink-2",
+							)}
+						>
+							<Icon
+								name={exportMessage.startsWith("Export failed") ? "warning-circle" : "check-circle"}
+								className="mt-0.5 shrink-0"
+							/>
+							<p className="flex-1 leading-5">{exportMessage}</p>
+							{onDismissExportMessage ? (
+								<Button
+									variant="ghost"
+									size="icon-xs"
+									aria-label="Dismiss export message"
+									onClick={onDismissExportMessage}
+									className="shrink-0"
+								>
+									<Icon name="x" />
+								</Button>
+							) : null}
+						</div>
+					) : null}
+
 					<div className="flex flex-1 justify-center overflow-auto bg-sunken p-4 sm:p-8">
-						<article className="studio-page" aria-label="Resume page preview">
-							<div className="studio-page__masthead">
-								<div className="min-w-0">
-									<p className="studio-page__eyebrow">Resume preview</p>
-									<p className="studio-page__name">{fullName}</p>
-									<p className="studio-page__headline">{headline}</p>
-								</div>
-								<span className="studio-page__avatar" aria-hidden="true">
-									LR
-								</span>
-							</div>
-
-							<div className="studio-page__rule" />
-
-							<div className="studio-page__columns">
-								<div className="studio-page__column">
-									<p className="studio-page__section-title">Experience</p>
-									<div className="studio-page__entry">
-										<SkeletonLine width="medium" />
-										<SkeletonLine width="short" />
-										<SkeletonLine />
-										<SkeletonLine width="long" />
-									</div>
-									<div className="studio-page__entry">
-										<SkeletonLine width="medium" />
-										<SkeletonLine width="short" />
-										<SkeletonLine width="long" />
-									</div>
-								</div>
-
-								<div className="studio-page__column">
-									<p className="studio-page__section-title">Skills</p>
-									<div className="studio-page__chips" aria-hidden="true">
-										<span />
-										<span />
-										<span />
-										<span />
-										<span />
-									</div>
-									<p className="studio-page__section-title studio-page__section-title--spaced">Education</p>
-									<div className="studio-page__entry">
-										<SkeletonLine width="medium" />
-										<SkeletonLine width="short" />
-									</div>
-								</div>
-							</div>
-
-							<p className="studio-page__note">
-								The rendered PDF preview arrives in Task 6. This page reserves the exact preview area used by the
-								editor.
-							</p>
-						</article>
+						{state.data ? (
+							<PdfPreview
+								data={state.data}
+								renderPdf={renderPdf}
+								loadDocument={loadPdfDocument}
+								onRendered={onPdfRendered}
+							/>
+						) : null}
 					</div>
 				</aside>
 			</main>

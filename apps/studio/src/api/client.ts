@@ -39,6 +39,8 @@ export type ResumeApiClient = {
 	duplicate(id: string, label: string): Promise<StoredResume>;
 	rename(id: string, label: string, etag: string): Promise<StoredResume>;
 	remove(id: string, etag: string): Promise<void>;
+	/** Archives already-rendered PDF bytes through the loopback API and returns the archive filename. */
+	exportPdf(id: string, pdf: Blob): Promise<{ filename: string }>;
 };
 
 export type ResumeApiClientOptions = {
@@ -74,6 +76,15 @@ const withResponseEtag = (resume: StoredResume, response: Response): StoredResum
 	...resume,
 	etag: responseEtag(response) ?? resume.etag,
 });
+
+/** The archive filename the loopback server attached to an export response. */
+const responseFilename = (response: Response, fallback: string): string => {
+	const header = response.headers.get("content-disposition");
+	const quoted = header?.match(/filename\s*=\s*"([^"]+)"/i);
+	const bare = header?.match(/filename\s*=\s*([^;]+)/i);
+	const value = quoted?.[1] ?? bare?.[1]?.trim();
+	return value && value !== "" ? value : fallback;
+};
 
 const toApiError = async (response: Response): Promise<ResumeApiError> => {
 	let message = `The local resume API returned HTTP ${response.status}.`;
@@ -186,6 +197,20 @@ export const createResumeApiClient = (options: ResumeApiClientOptions = {}): Res
 				headers: { "If-Match": rawEtag(etag) },
 			});
 			if (!response.ok) throw await toApiError(response);
+		},
+
+		async exportPdf(id, pdf) {
+			const response = await request(`/api/resumes/${encodeId(id)}/exports`, {
+				method: "POST",
+				headers: { Accept: "application/pdf", "Content-Type": "application/pdf" },
+				body: pdf,
+			});
+			if (!response.ok) throw await toApiError(response);
+
+			const filename = responseFilename(response, `${id}.pdf`);
+			// The server echoes the archived bytes; the caller already holds them for download.
+			await response.arrayBuffer().catch(() => undefined);
+			return { filename };
 		},
 	};
 };

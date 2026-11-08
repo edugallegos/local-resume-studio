@@ -1,9 +1,13 @@
 import type { StoredResume } from "@local-resume/store/types";
+import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { Badge } from "@reactive-resume/ui/components/badge";
 import { useMemo, useReducer, useState } from "react";
 import { createResumeApiClient, isResumeConflictError, type ResumeApiClient } from "./api/client";
 import { type EditorTab, EditorShell } from "./components/editor-shell";
+import { downloadPdf as archiveAndDownloadPdf, type SavePdfFile } from "./features/export/download-pdf";
+import { renderResumePdf, type ResumePdfRender } from "./features/export/render-resume-pdf";
 import { ResumeLibrary } from "./features/library/resume-library";
+import type { LoadPdfDocument } from "./features/preview/pdf-preview";
 import { editResume, type ResumeEdit } from "./features/write/resume-edits";
 import { editorReducer, initialEditorState } from "./state/editor-state";
 
@@ -14,6 +18,10 @@ export type AppProps = {
 	client?: ResumeApiClient;
 	/** Injected by tests so dirty-draft export stays deterministic. */
 	downloadJson?: (filename: string, contents: string) => void;
+	/** Injectable PDF engine and browser download for deterministic tests. */
+	renderPdf?: (data: ResumeData) => Promise<ResumePdfRender>;
+	loadPdfDocument?: LoadPdfDocument;
+	savePdf?: SavePdfFile;
 };
 
 const conflictMessage =
@@ -25,13 +33,22 @@ const saveFailureMessage = (error: unknown): string => {
 	return `Save failed: ${detail} Your unsaved draft is still here and remains dirty.`;
 };
 
-export function App({ client: injectedClient, downloadJson }: AppProps = {}) {
+export function App({
+	client: injectedClient,
+	downloadJson,
+	renderPdf = renderResumePdf,
+	loadPdfDocument,
+	savePdf,
+}: AppProps = {}) {
 	const client = useMemo<ResumeApiClient>(() => injectedClient ?? createResumeApiClient(), [injectedClient]);
 	const [state, dispatch] = useReducer(editorReducer, initialEditorState);
 	const [view, setView] = useState<View>("library");
 	const [activeTab, setActiveTab] = useState<EditorTab>("write");
 	const [selectedResume, setSelectedResume] = useState<StoredResume | null>(null);
 	const [saveMessage, setSaveMessage] = useState<string | null>(null);
+	const [renderedPdf, setRenderedPdf] = useState<ResumePdfRender | null>(null);
+	const [exportingPdf, setExportingPdf] = useState(false);
+	const [exportMessage, setExportMessage] = useState<string | null>(null);
 
 	const handleOpen = (resume: StoredResume): void => {
 		// Belts and braces: the library blocks these transitions too, but the editor never replaces a
@@ -50,12 +67,17 @@ export function App({ client: injectedClient, downloadJson }: AppProps = {}) {
 		});
 		setSelectedResume(resume);
 		setSaveMessage(null);
+		setRenderedPdf(null);
+		setExportMessage(null);
 		setActiveTab("write");
 		setView("editor");
 	};
 
 	const handleEdit = (edit: ResumeEdit): void => {
 		if (!state.data) return;
+		// The preview is recomputed from the new draft; never let an older Blob be downloaded as current.
+		setRenderedPdf(null);
+		setExportMessage(null);
 		dispatch({ type: "edit", data: editResume(state.data, edit) });
 	};
 
@@ -114,7 +136,37 @@ export function App({ client: injectedClient, downloadJson }: AppProps = {}) {
 		dispatch({ type: "reset" });
 		setSelectedResume(null);
 		setSaveMessage(null);
+		setRenderedPdf(null);
+		setExportMessage(null);
 		setView("library");
+	};
+
+	const handleDownloadPdf = async (): Promise<void> => {
+		if (!renderedPdf || !state.selectedId || exportingPdf) return;
+
+		const id = state.selectedId;
+		const fallback = `${selectedResume?.label ?? id}.pdf`;
+		setExportingPdf(true);
+		setExportMessage(null);
+
+		try {
+			const filename = await archiveAndDownloadPdf({
+				client,
+				id,
+				blob: renderedPdf.blob,
+				fallbackFilename: fallback,
+				...(savePdf ? { save: savePdf } : {}),
+			});
+			setExportMessage(`Archived in the local PDF store and downloaded as ${filename}.`);
+		} catch (error) {
+			const detail =
+				error instanceof Error && error.message.trim() !== ""
+					? error.message
+					: "The local resume API could not archive the PDF.";
+			setExportMessage(`Export failed: ${detail} The preview and your draft are unchanged.`);
+		} finally {
+			setExportingPdf(false);
+		}
 	};
 
 	if (view === "editor" && state.data) {
@@ -132,6 +184,14 @@ export function App({ client: injectedClient, downloadJson }: AppProps = {}) {
 					setSaveMessage(null);
 					dispatch({ type: "clear-error" });
 				}}
+				renderPdf={renderPdf}
+				loadPdfDocument={loadPdfDocument}
+				onPdfRendered={setRenderedPdf}
+				onDownloadPdf={() => void handleDownloadPdf()}
+				pdfReady={renderedPdf !== null}
+				exportingPdf={exportingPdf}
+				exportMessage={exportMessage}
+				onDismissExportMessage={() => setExportMessage(null)}
 			/>
 		);
 	}

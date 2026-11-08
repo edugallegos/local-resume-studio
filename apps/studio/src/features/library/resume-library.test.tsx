@@ -40,6 +40,7 @@ const makeClient = (overrides: Partial<ResumeApiClient> = {}): ResumeApiClient =
 	duplicate: vi.fn(async () => storedResume()),
 	rename: vi.fn(async () => storedResume()),
 	remove: vi.fn(async () => undefined),
+	exportPdf: vi.fn(async () => ({ filename: "ada-lovelace.pdf" })),
 	...overrides,
 });
 

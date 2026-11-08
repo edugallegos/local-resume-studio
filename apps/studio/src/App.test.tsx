@@ -40,8 +40,11 @@ const makeClient = (overrides: Partial<ResumeApiClient> = {}): ResumeApiClient =
 	duplicate: vi.fn(async () => storedResume()),
 	rename: vi.fn(async () => storedResume()),
 	remove: vi.fn(async () => undefined),
+	exportPdf: vi.fn(async () => ({ filename: "ada-lovelace.pdf" })),
 	...overrides,
 });
+
+const neverRenderPdf = vi.fn(() => new Promise<never>(() => undefined));
 
 const openResume = async (user: ReturnType<typeof userEvent.setup>): Promise<void> => {
 	await user.click(await screen.findByRole("button", { name: /open ada lovelace/i }));
@@ -58,7 +61,7 @@ describe("App editor tabs", () => {
 		const item = listItem();
 		const client = makeClient({ list: vi.fn(async () => [item]) });
 
-		render(<App client={client} />);
+		render(<App client={client} renderPdf={neverRenderPdf} />);
 		await openResume(user);
 
 		const tabs = screen.getAllByRole("tab");
@@ -105,7 +108,7 @@ describe("App save workflow", () => {
 		}));
 		const client = makeClient({ list: vi.fn(async () => [item]), read: vi.fn(async () => stored), save });
 
-		render(<App client={client} />);
+		render(<App client={client} renderPdf={neverRenderPdf} />);
 		await openResume(user);
 
 		const name = screen.getByLabelText("Full name");
@@ -146,7 +149,7 @@ describe("App save workflow", () => {
 			}));
 		const client = makeClient({ list: vi.fn(async () => [item]), read: vi.fn(async () => stored), save });
 
-		render(<App client={client} />);
+		render(<App client={client} renderPdf={neverRenderPdf} />);
 		await openResume(user);
 
 		const name = screen.getByLabelText("Full name");
@@ -193,7 +196,7 @@ describe("App save workflow", () => {
 		});
 		const client = makeClient({ list: vi.fn(async () => [item]), read: vi.fn(async () => stored), save });
 
-		render(<App client={client} />);
+		render(<App client={client} renderPdf={neverRenderPdf} />);
 		await openResume(user);
 
 		const name = screen.getByLabelText("Full name");
@@ -227,7 +230,7 @@ describe("App save workflow", () => {
 		});
 		const client = makeClient({ list: vi.fn(async () => [item]), read: vi.fn(async () => stored), save });
 
-		render(<App client={client} />);
+		render(<App client={client} renderPdf={neverRenderPdf} />);
 		await openResume(user);
 
 		const headline = screen.getByLabelText("Headline");
@@ -255,7 +258,7 @@ describe("App dirty draft navigation", () => {
 		const client = makeClient({ list: vi.fn(async () => [item]), read });
 		const downloadJson = vi.fn();
 
-		render(<App client={client} downloadJson={downloadJson} />);
+		render(<App client={client} downloadJson={downloadJson} renderPdf={neverRenderPdf} />);
 		await openResume(user);
 
 		const name = screen.getByLabelText("Full name");
@@ -282,7 +285,7 @@ describe("App dirty draft navigation", () => {
 		const read = vi.fn<ResumeApiClient["read"]>(async () => stored);
 		const client = makeClient({ list: vi.fn(async () => [active, other]), read });
 
-		render(<App client={client} />);
+		render(<App client={client} renderPdf={neverRenderPdf} />);
 		await openResume(user);
 
 		const name = screen.getByLabelText("Full name");
@@ -301,5 +304,50 @@ describe("App dirty draft navigation", () => {
 		await user.click(screen.getByRole("button", { name: /return to editor/i }));
 		expect(await screen.findByLabelText("Full name")).toHaveProperty("value", "Ada Draft Kept");
 		expect(read).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("App PDF export", () => {
+	it("archives and downloads the exact Blob the preview rendered, without saving the draft", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const stored = storedResume(item);
+		const pdfBlob = new Blob(["%PDF-1.7 preview"], { type: "application/pdf" });
+		const exportPdf = vi.fn(async () => ({ filename: "ada-lovelace-2026.pdf" }));
+		const save = vi.fn<ResumeApiClient["save"]>(async () => stored);
+		const savePdf = vi.fn();
+		const client = makeClient({ list: vi.fn(async () => [item]), read: vi.fn(async () => stored), exportPdf, save });
+		const renderPdf = vi.fn(async () => ({
+			blob: pdfBlob,
+			pageMap: { pages: [{ width: 595, height: 842 }], nodes: [] },
+			missingFonts: [],
+			lostCharacters: [],
+		}));
+
+		render(
+			<App
+				client={client}
+				renderPdf={renderPdf}
+				loadPdfDocument={async () => ({
+					numPages: 1,
+					getPage: async () => ({
+						getViewport: () => ({ width: 595, height: 842 }),
+						render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+					}),
+				})}
+				savePdf={savePdf}
+			/>,
+		);
+		await openResume(user);
+
+		const download = await screen.findByRole("button", { name: /download pdf/i });
+		await waitFor(() => expect(download).toHaveProperty("disabled", false));
+		await user.click(download);
+
+		await waitFor(() => expect(exportPdf).toHaveBeenCalledTimes(1));
+		expect(exportPdf).toHaveBeenCalledWith(item.id, pdfBlob);
+		await waitFor(() => expect(savePdf).toHaveBeenCalledWith("ada-lovelace-2026.pdf", pdfBlob));
+		expect(save).not.toHaveBeenCalled();
+		expect(screen.getByRole("status").textContent).toMatch(/Archived in the local PDF store/i);
 	});
 });

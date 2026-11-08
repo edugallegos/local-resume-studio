@@ -101,6 +101,46 @@ describe("createResumeApiClient", () => {
 		expect(removeInit).toMatchObject({ method: "DELETE", headers: { "If-Match": "renamed-etag" } });
 	});
 
+	it("posts the already-rendered PDF Blob to the export route and returns the archive filename", async () => {
+		const pdf = new Blob(["%PDF-1.7 synthetic"], { type: "application/pdf" });
+		const fetchMock = vi.fn<typeof fetch>(async () =>
+			new Response(pdf, {
+				status: 200,
+				headers: {
+					"Content-Type": "application/pdf",
+					"Content-Disposition": 'attachment; filename="ada-lovelace-2026-01-02.pdf"',
+				},
+			}),
+		);
+		const client = createResumeApiClient({ fetch: fetchMock });
+
+		await expect(client.exportPdf("ada lovelace", pdf)).resolves.toEqual({
+			filename: "ada-lovelace-2026-01-02.pdf",
+		});
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(url).toBe("/api/resumes/ada%20lovelace/exports");
+		expect(init).toMatchObject({
+			method: "POST",
+			headers: expect.objectContaining({ "Content-Type": "application/pdf", Accept: "application/pdf" }),
+		});
+		expect(init?.body).toBe(pdf);
+	});
+
+	it("maps export failures to the typed API error", async () => {
+		const fetchMock = vi.fn<typeof fetch>(async () =>
+			jsonResponse(
+				{ error: { code: "PAYLOAD_TOO_LARGE", message: "Request bodies are limited to 52428800 bytes." } },
+				{ status: 413 },
+			),
+		);
+		const client = createResumeApiClient({ fetch: fetchMock });
+
+		await expect(
+			client.exportPdf("ada-lovelace", new Blob(["%PDF"], { type: "application/pdf" })),
+		).rejects.toMatchObject({ status: 413, code: "PAYLOAD_TOO_LARGE" });
+	});
+
 	it("throws a typed API error and recognizes conflicts", async () => {
 		const fetchMock = vi.fn<typeof fetch>(async () =>
 			jsonResponse(
