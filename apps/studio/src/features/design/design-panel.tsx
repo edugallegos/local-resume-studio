@@ -1,7 +1,17 @@
 import type { EntryHeader, ResumeData } from "@reactive-resume/schema/resume/data";
 import { entryHeaderAccents, entryHeaderLayouts, entryHeaderOf } from "@reactive-resume/schema/resume/data";
-import { templateLayouts, templateSchema } from "@reactive-resume/schema/templates";
-import { useMemo } from "react";
+import { type Template, templateLayouts, templateSchema } from "@reactive-resume/schema/templates";
+import { Icon } from "@reactive-resume/ui/components/icon";
+import { cn } from "@reactive-resume/utils/style";
+import {
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	type FocusEvent,
+	type KeyboardEvent,
+	type RefObject,
+} from "react";
 import {
 	DENSITY_PRESETS,
 	type DesignDensity,
@@ -9,6 +19,12 @@ import {
 	type LayoutColumn,
 	type ResumeEdit,
 } from "../write/resume-edits";
+import {
+	templateDisplayName,
+	templateSampleImage,
+	type TemplateThumbnailDependencies,
+	useTemplateThumbnail,
+} from "./template-thumbnail";
 
 export { DENSITY_PRESETS };
 
@@ -75,10 +91,172 @@ const numberValue = (value: string, fallback: number): number => {
 export type DesignPanelProps = {
 	data: ResumeData;
 	onEdit: (edit: ResumeEdit) => void;
+	/** Ephemeral, not an edit: the shell swaps the preview template and restores it when cleared. */
+	onPreviewTemplate?: (template: Template | null) => void;
+	/** Tests can skip real PDF thumbnail rendering; production keeps it enabled. */
+	thumbnailsEnabled?: boolean;
+	thumbnailDependencies?: TemplateThumbnailDependencies;
 };
 
 const fieldClass =
 	"w-full rounded-sm border border-line-2 bg-surface px-2.5 py-1.5 text-sm text-ink shadow-none focus-visible:outline-2 focus-visible:outline-accent";
+
+export type TemplateFilter = "all" | "one" | "two" | "ats";
+
+export const TEMPLATE_FILTERS: { id: TemplateFilter; label: string }[] = [
+	{ id: "all", label: "All" },
+	{ id: "one", label: "One column" },
+	{ id: "two", label: "Two columns" },
+	{ id: "ats", label: "ATS-safe" },
+];
+
+/** The single source for gallery filtering, mirroring the pinned template layout metadata. */
+export const templateMatchesFilter = (template: Template, filter: TemplateFilter): boolean => {
+	const layout = templateLayouts[template];
+	if (filter === "one") return layout.columns === 1;
+	if (filter === "two") return layout.columns === 2;
+	if (filter === "ats") return layout.atsSafe;
+	return true;
+};
+
+export const templateLayoutTags = (template: Template): string => {
+	const layout = templateLayouts[template];
+	const tags = [layout.columns === 1 ? "One column" : "Two columns"];
+	if (layout.atsSafe) tags.push("ATS-safe");
+	return tags.join(" · ");
+};
+
+/** Touch has no hover: holding a card this long previews it instead of applying it. */
+const HOLD_TO_PREVIEW_MS = 400;
+
+function useInView(ref: RefObject<HTMLElement | null>, rootMargin = "240px"): boolean {
+	const [inView, setInView] = useState(false);
+
+	useEffect(() => {
+		if (inView) return;
+		const node = ref.current;
+		// A host without IntersectionObserver (tests, older browsers) simply renders the card's thumbnail.
+		if (!node || typeof IntersectionObserver === "undefined") {
+			setInView(true);
+			return;
+		}
+		const observer = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((entry) => entry.isIntersecting)) {
+					setInView(true);
+					observer.disconnect();
+				}
+			},
+			{ rootMargin },
+		);
+		observer.observe(node);
+		return () => observer.disconnect();
+	}, [inView, ref, rootMargin]);
+
+	return inView;
+}
+
+type TemplateCardProps = {
+	template: Template;
+	data: ResumeData;
+	selected: boolean;
+	thumbnailsEnabled: boolean;
+	thumbnailDependencies?: TemplateThumbnailDependencies;
+	onPreview: () => void;
+	onClearPreview: () => void;
+	onApply: () => void;
+};
+
+function TemplateCard({
+	template,
+	data,
+	selected,
+	thumbnailsEnabled,
+	thumbnailDependencies,
+	onPreview,
+	onClearPreview,
+	onApply,
+}: TemplateCardProps) {
+	const ref = useRef<HTMLButtonElement | null>(null);
+	const inView = useInView(ref);
+	const { url } = useTemplateThumbnail({
+		data,
+		template,
+		enabled: thumbnailsEnabled && inView,
+		dependencies: thumbnailDependencies,
+	});
+	const [failedUrl, setFailedUrl] = useState<string | null>(null);
+	const sampleImage = templateSampleImage(template);
+	const imageSource = url && failedUrl !== url ? url : sampleImage;
+	const hold = useRef<{ timer?: ReturnType<typeof setTimeout>; previewing: boolean }>({ previewing: false });
+
+	const endHold = () => {
+		if (hold.current.timer) clearTimeout(hold.current.timer);
+		if (hold.current.previewing) onClearPreview();
+	};
+
+	return (
+		<button
+			ref={ref}
+			type="button"
+			data-template-id={template}
+			aria-pressed={selected}
+			aria-label={`${templateDisplayName(template)} template, ${templateLayoutTags(template)}`}
+			onPointerEnter={(event) => {
+				if (event.pointerType !== "touch") onPreview();
+			}}
+			onPointerDown={(event) => {
+				if (event.pointerType !== "touch") return;
+				hold.current.previewing = false;
+				hold.current.timer = setTimeout(() => {
+					hold.current.previewing = true;
+					onPreview();
+				}, HOLD_TO_PREVIEW_MS);
+			}}
+			onPointerUp={endHold}
+			onPointerCancel={() => {
+				endHold();
+				onClearPreview();
+			}}
+			onPointerLeave={() => {
+				if (hold.current.previewing) endHold();
+			}}
+			// A long press shows the preview; it doesn't open the system menu or apply the template.
+			onContextMenu={(event) => event.preventDefault()}
+			onFocus={onPreview}
+			onClick={() => {
+				if (hold.current.previewing) {
+					hold.current.previewing = false;
+					return;
+				}
+				onApply();
+			}}
+			className="group/card grid min-w-0 gap-1.5 rounded-lg text-start focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+		>
+			<span
+				className={cn(
+					"relative block aspect-[210/297] overflow-hidden rounded-md border border-line bg-white shadow-e1 transition-transform duration-quick group-hover/card:-translate-y-0.5",
+					selected && "ring-2 ring-accent ring-offset-2 ring-offset-surface",
+				)}
+			>
+				<img
+					src={imageSource}
+					alt=""
+					loading="lazy"
+					onError={() => setFailedUrl(imageSource)}
+					className="size-full object-cover object-top"
+				/>
+				{selected ? (
+					<span className="absolute end-1.5 top-1.5 grid size-5 place-items-center rounded-sm bg-accent text-on-accent">
+						<Icon name="check" size={14} />
+					</span>
+				) : null}
+			</span>
+			<span className="truncate text-sm font-medium leading-4 text-ink">{templateDisplayName(template)}</span>
+			<span className="text-xs leading-4 text-ink-3">{templateLayoutTags(template)}</span>
+		</button>
+	);
+}
 
 function SectionList({
 	title,
@@ -157,7 +335,22 @@ function SectionList({
  * Local design controls. Every control dispatches a named edit; `editResume` writes only the supported
  * ResumeData paths, so unsupported imported fields and custom sections survive untouched.
  */
-export function DesignPanel({ data, onEdit }: DesignPanelProps) {
+export function DesignPanel({
+	data,
+	onEdit,
+	onPreviewTemplate,
+	thumbnailsEnabled = true,
+	thumbnailDependencies,
+}: DesignPanelProps) {
+	const [filter, setFilter] = useState<TemplateFilter>("all");
+	const onPreviewTemplateRef = useRef(onPreviewTemplate);
+	onPreviewTemplateRef.current = onPreviewTemplate;
+
+	useEffect(() => {
+		// Leaving Design (or unmounting the panel) never leaves a temporary template on the page.
+		return () => onPreviewTemplateRef.current?.(null);
+	}, []);
+
 	const entry = entryHeaderOf(data.metadata.design);
 	const accent = toHex(data.metadata.design.colors.primary);
 	const density =
@@ -170,6 +363,34 @@ export function DesignPanel({ data, onEdit }: DesignPanelProps) {
 				candidate.body === data.metadata.typography.body.fontFamily &&
 				candidate.heading === data.metadata.typography.heading.fontFamily,
 		)?.id ?? "custom";
+
+	const shownTemplates = useMemo(
+		() => templateSchema.options.filter((template) => templateMatchesFilter(template, filter)),
+		[filter],
+	);
+
+	const previewTemplate = (template: Template) => {
+		// Previewing the template already in use restores the applied page rather than rendering a duplicate.
+		onPreviewTemplate?.(template === data.metadata.template ? null : template);
+	};
+
+	const clearPreview = () => onPreviewTemplate?.(null);
+
+	const applyTemplate = (template: Template) => {
+		onPreviewTemplate?.(null);
+		if (template === data.metadata.template) return;
+		onEdit({ type: "update-template", template });
+	};
+
+	const onGalleryBlur = (event: FocusEvent<HTMLFieldSetElement>) => {
+		if (!event.currentTarget.contains(event.relatedTarget as Node | null)) clearPreview();
+	};
+
+	const onGalleryKeyDown = (event: KeyboardEvent<HTMLFieldSetElement>) => {
+		if (event.key !== "Escape") return;
+		event.stopPropagation();
+		clearPreview();
+	};
 
 	const sections = useMemo(() => {
 		const known = new Map<string, SectionEntry>();
@@ -209,26 +430,62 @@ export function DesignPanel({ data, onEdit }: DesignPanelProps) {
 				Save changes.
 			</p>
 
-			<fieldset className="grid gap-4 sm:grid-cols-2">
-				<legend className="mb-2 text-sm font-semibold text-ink">Template &amp; type</legend>
+			<fieldset className="flex flex-col gap-3">
+				<legend className="mb-1 text-sm font-semibold text-ink">Template</legend>
+				<p className="text-xs leading-5 text-ink-3">
+					Hover or focus a card to preview it on the live page. Click to apply it to this in-memory draft.
+				</p>
 
-				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-					Template
-					<select
-						className={fieldClass}
-						value={data.metadata.template}
-						onChange={(event) =>
-							onEdit({ type: "update-template", template: event.target.value as (typeof templateSchema.options)[number] })
-						}
-					>
-						{templateSchema.options.map((template) => (
-							<option key={template} value={template}>
-								{titleCase(template)} · {templateLayouts[template].columns} column
-								{templateLayouts[template].columns === 1 ? "" : "s"}
-							</option>
-						))}
-					</select>
-				</label>
+				<div className="flex flex-wrap items-center gap-1.5">
+					{TEMPLATE_FILTERS.map((option) => {
+						const active = option.id === filter;
+						return (
+							<button
+								key={option.id}
+								type="button"
+								aria-pressed={active}
+								onClick={() => setFilter(option.id)}
+								className={cn(
+									"flex h-7 items-center rounded-sm border px-3 text-[13px] transition-colors",
+									active
+										? "border-accent bg-accent-soft font-medium text-accent-text"
+										: "border-line-2 text-ink-2 hover:bg-hover",
+								)}
+							>
+								{option.label}
+							</button>
+						);
+					})}
+					<span className="ms-auto text-xs text-ink-3">
+						{shownTemplates.length} of {templateSchema.options.length} shown
+					</span>
+				</div>
+
+				<fieldset
+					aria-label="Template gallery"
+					className="m-0 grid min-w-0 grid-cols-2 gap-3 border-0 p-0 sm:grid-cols-3"
+					onPointerLeave={clearPreview}
+					onBlur={onGalleryBlur}
+					onKeyDown={onGalleryKeyDown}
+				>
+					{shownTemplates.map((template) => (
+						<TemplateCard
+							key={template}
+							template={template}
+							data={data}
+							selected={template === data.metadata.template}
+							thumbnailsEnabled={thumbnailsEnabled}
+							thumbnailDependencies={thumbnailDependencies}
+							onPreview={() => previewTemplate(template)}
+							onClearPreview={clearPreview}
+							onApply={() => applyTemplate(template)}
+						/>
+					))}
+				</fieldset>
+			</fieldset>
+
+			<fieldset className="grid gap-4 sm:grid-cols-2">
+				<legend className="mb-2 text-sm font-semibold text-ink">Type &amp; accent</legend>
 
 				<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
 					Font pairing

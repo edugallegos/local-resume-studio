@@ -77,12 +77,36 @@ test.describe("local editor round trips", () => {
 		});
 	});
 
-	test("selects a template, previews the draft, and downloads an archived PDF", async ({ page }) => {
+	test("previews a gallery template without changing the draft, applies it, and downloads an archived PDF", async ({
+		page,
+	}) => {
 		await createResume(page, "Template Export");
 		await page.getByLabel("Full name").fill("Template Export");
+		await saveDraft(page);
 		await page.getByRole("tab", { name: "Design" }).click();
-		await page.getByLabel("Template").selectOption("lapras");
-		await expect(page.getByLabel("Template")).toHaveValue("lapras");
+
+		const gallery = page.getByRole("group", { name: "Template gallery" });
+		await expect(gallery.getByRole("button")).toHaveCount(18);
+		const appliedCard = gallery.locator('[aria-pressed="true"]');
+		await expect(appliedCard).toHaveAttribute("data-template-id", "onyx");
+
+		const save = page.getByRole("button", { name: "Save changes" });
+		await expect(save).toBeDisabled();
+
+		// Hovering is a temporary preview: the selected draft and Save state stay untouched.
+		const azurill = gallery.locator('[data-template-id="azurill"]');
+		await azurill.hover();
+		await expect(page.getByTestId("template-preview-status")).toContainText(
+			"Previewing Azurill · click to apply",
+		);
+		await expect(appliedCard).toHaveAttribute("data-template-id", "onyx");
+		await expect(save).toBeDisabled();
+
+		// Only the click applies the template to the in-memory draft.
+		await azurill.click();
+		await expect(azurill).toHaveAttribute("aria-pressed", "true");
+		await expect(page.getByTestId("template-preview-status")).toHaveCount(0);
+		await expect(save).toBeEnabled();
 
 		const downloadButton = page.getByRole("button", { name: "Download PDF" });
 		await expect(downloadButton).toBeEnabled({ timeout: 90_000 });

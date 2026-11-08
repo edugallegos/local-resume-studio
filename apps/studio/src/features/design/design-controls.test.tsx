@@ -1,13 +1,14 @@
 // @vitest-environment happy-dom
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
-import { templateSchema } from "@reactive-resume/schema/templates";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { type Template, templateLayouts, templateSchema } from "@reactive-resume/schema/templates";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { editResume, type ResumeEdit } from "../write/resume-edits";
 import { DENSITY_PRESETS, DesignPanel, FONT_PAIRINGS, SECTION_LABELS } from "./design-panel";
+import { templateSampleImage, type TemplateThumbnailDependencies } from "./template-thumbnail";
 
 /** Synthetic v6.1.0 fixture. Never use a real person's resume here. */
 const syntheticResume = (): ResumeData => {
@@ -22,9 +23,19 @@ type HarnessProps = {
 	initialData: ResumeData;
 	onEdit?: (edit: ResumeEdit) => void;
 	onData?: (data: ResumeData) => void;
+	onPreviewTemplate?: (template: Template | null) => void;
+	thumbnailsEnabled?: boolean;
+	thumbnailDependencies?: TemplateThumbnailDependencies;
 };
 
-function Harness({ initialData, onEdit, onData }: HarnessProps) {
+function Harness({
+	initialData,
+	onEdit,
+	onData,
+	onPreviewTemplate,
+	thumbnailsEnabled = false,
+	thumbnailDependencies,
+}: HarnessProps) {
 	const [data, setData] = useState(initialData);
 	return (
 		<DesignPanel
@@ -37,35 +48,180 @@ function Harness({ initialData, onEdit, onData }: HarnessProps) {
 					return next;
 				});
 			}}
+			onPreviewTemplate={onPreviewTemplate}
+			thumbnailsEnabled={thumbnailsEnabled}
+			thumbnailDependencies={thumbnailDependencies}
 		/>
 	);
 }
 
-const setup = (data = syntheticResume()) => {
+const setup = (
+	data = syntheticResume(),
+	options: Pick<HarnessProps, "thumbnailsEnabled" | "thumbnailDependencies"> = {},
+) => {
 	const onData = vi.fn<(data: ResumeData) => void>();
 	const onEdit = vi.fn<(edit: ResumeEdit) => void>();
+	const onPreviewTemplate = vi.fn<(template: Template | null) => void>();
 	const user = userEvent.setup();
-	render(<Harness initialData={data} onData={onData} onEdit={onEdit} />);
+	render(
+		<Harness
+			initialData={data}
+			onData={onData}
+			onEdit={onEdit}
+			onPreviewTemplate={onPreviewTemplate}
+			{...options}
+		/>,
+	);
 	const latest = (): ResumeData => onData.mock.calls.at(-1)?.[0] ?? data;
-	return { user, latest, onData, onEdit };
+	const gallery = (): HTMLElement => screen.getByRole("group", { name: "Template gallery" });
+	const card = (template: Template): HTMLElement => {
+		const found = gallery().querySelector<HTMLElement>(`[data-template-id="${template}"]`);
+		if (!found) throw new Error(`Template card not found: ${template}`);
+		return found;
+	};
+	return { user, latest, onData, onEdit, onPreviewTemplate, gallery, card };
 };
 
 afterEach(() => {
 	cleanup();
+	vi.unstubAllGlobals();
 });
 
 describe("DesignPanel", () => {
 	it("offers exactly the 18 pinned templates and writes each template id", async () => {
-		const { user, latest } = setup();
-		const select = screen.getByLabelText("Template") as HTMLSelectElement;
+		const { user, latest, card } = setup();
+		const gallery = screen.getByRole("group", { name: "Template gallery" });
+		const cards = within(gallery).getAllByRole("button");
 
-		expect(select.options).toHaveLength(18);
-		expect([...select.options].map((option) => option.value)).toEqual([...templateSchema.options]);
+		expect(cards).toHaveLength(18);
+		expect(cards.map((entry) => entry.getAttribute("data-template-id"))).toEqual([
+			...templateSchema.options,
+		]);
 
 		for (const template of templateSchema.options) {
-			await user.selectOptions(select, template);
+			await user.click(card(template));
 			expect(latest().metadata.template).toBe(template);
 		}
+	});
+
+	it("filters the gallery by column count and ATS safety", async () => {
+		const { user, gallery } = setup();
+		const templateIds = (): (string | null)[] =>
+			within(gallery()).getAllByRole("button").map((entry) => entry.getAttribute("data-template-id"));
+
+		expect(screen.getByText("18 of 18 shown")).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "One column" }));
+		expect(templateIds()).toEqual(
+			templateSchema.options.filter((template) => templateLayouts[template].columns === 1),
+		);
+		expect(screen.getByText("10 of 18 shown")).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "Two columns" }));
+		expect(templateIds()).toEqual(
+			templateSchema.options.filter((template) => templateLayouts[template].columns === 2),
+		);
+		expect(screen.getByText("8 of 18 shown")).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "ATS-safe" }));
+		expect(templateIds()).toEqual(
+			templateSchema.options.filter((template) => templateLayouts[template].atsSafe),
+		);
+		expect(screen.getByText("10 of 18 shown")).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "All" }));
+		expect(templateIds()).toHaveLength(18);
+	});
+
+	it("marks the applied template as selected", async () => {
+		const { user, card } = setup();
+
+		expect(card("onyx").getAttribute("aria-pressed")).toBe("true");
+		expect(card("azurill").getAttribute("aria-pressed")).toBe("false");
+
+		await user.click(card("azurill"));
+
+		expect(card("azurill").getAttribute("aria-pressed")).toBe("true");
+		expect(card("onyx").getAttribute("aria-pressed")).toBe("false");
+	});
+
+	it("previews on hover and focus, then restores on escape, blur, and pointer leave", () => {
+		const { onEdit, onPreviewTemplate, card, gallery } = setup();
+		const previewed = (): Template | null | undefined => onPreviewTemplate.mock.calls.at(-1)?.[0];
+
+		fireEvent.pointerEnter(card("azurill"), { pointerType: "mouse" });
+		expect(previewed()).toBe("azurill");
+		expect(onEdit).not.toHaveBeenCalled();
+
+		fireEvent.pointerLeave(gallery());
+		expect(previewed()).toBeNull();
+
+		fireEvent.focus(card("persian"));
+		expect(previewed()).toBe("persian");
+
+		fireEvent.keyDown(card("persian"), { key: "Escape" });
+		expect(previewed()).toBeNull();
+
+		fireEvent.focus(card("lapras"));
+		expect(previewed()).toBe("lapras");
+		fireEvent.focusOut(card("lapras"), { relatedTarget: document.body });
+		expect(previewed()).toBeNull();
+
+		// Previewing the template already in use restores the applied page instead of duplicating it.
+		fireEvent.pointerEnter(card("onyx"), { pointerType: "mouse" });
+		expect(previewed()).toBeNull();
+		expect(onEdit).not.toHaveBeenCalled();
+	});
+
+	it("clears the temporary preview and applies a clicked template", async () => {
+		const { user, latest, onEdit, onPreviewTemplate, card } = setup();
+
+		fireEvent.pointerEnter(card("azurill"), { pointerType: "mouse" });
+		expect(onPreviewTemplate).toHaveBeenLastCalledWith("azurill");
+
+		await user.click(card("azurill"));
+
+		expect(onPreviewTemplate).toHaveBeenLastCalledWith(null);
+		expect(onEdit).toHaveBeenCalledWith({ type: "update-template", template: "azurill" });
+		expect(latest().metadata.template).toBe("azurill");
+	});
+
+	it("previews on a touch hold without applying on release", async () => {
+		vi.useFakeTimers();
+		try {
+			const { onEdit, onPreviewTemplate, card } = setup();
+			const azurill = card("azurill");
+
+			fireEvent.pointerDown(azurill, { pointerType: "touch" });
+			act(() => {
+				vi.advanceTimersByTime(400);
+			});
+			expect(onPreviewTemplate).toHaveBeenLastCalledWith("azurill");
+
+			fireEvent.pointerUp(azurill, { pointerType: "touch" });
+			expect(onPreviewTemplate).toHaveBeenLastCalledWith(null);
+			fireEvent.click(azurill);
+			expect(onEdit).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps the bundled sample image while a thumbnail render fails", async () => {
+		vi.stubGlobal("IntersectionObserver", undefined);
+		const renderPdf = vi.fn(async () => {
+			throw new Error("thumbnail render failed");
+		});
+		setup(syntheticResume(), {
+			thumbnailsEnabled: true,
+			thumbnailDependencies: { renderPdf } as TemplateThumbnailDependencies,
+		});
+
+		await waitFor(() => expect(renderPdf).toHaveBeenCalled());
+		const azurill = screen
+			.getByRole("group", { name: "Template gallery" })
+			.querySelector<HTMLImageElement>('[data-template-id="azurill"] img');
+		expect(azurill?.getAttribute("src")).toBe(templateSampleImage("azurill"));
 	});
 
 	it("writes supported body and heading font pairings", async () => {
@@ -183,13 +339,13 @@ describe("DesignPanel", () => {
 	it("labels every visible section and writes only the supported design paths", async () => {
 		const data = syntheticResume() as ResumeData & { legacyUnknown: unknown };
 		data.legacyUnknown = { keep: true };
-		const { user, latest } = setup(data);
+		const { user, latest, card } = setup(data);
 
 		for (const label of Object.values(SECTION_LABELS)) {
 			expect(screen.getByRole("checkbox", { name: `Show ${label}` })).toBeTruthy();
 		}
 
-		await user.selectOptions(screen.getByLabelText("Template"), "lapras");
+		await user.click(card("lapras"));
 		await user.selectOptions(screen.getByLabelText("Font pairing"), FONT_PAIRINGS[1]?.id ?? "inter");
 
 		const next = latest() as ResumeData & { legacyUnknown: unknown };

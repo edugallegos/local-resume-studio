@@ -1,16 +1,21 @@
 import type { StoredResume } from "@local-resume/store/types";
 import type { PageMapTarget } from "@reactive-resume/pdf/page-map";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
+import type { Template } from "@reactive-resume/schema/templates";
 import { Badge } from "@reactive-resume/ui/components/badge";
 import { Button } from "@reactive-resume/ui/components/button";
 import { Icon, type IconName } from "@reactive-resume/ui/components/icon";
 import { Separator } from "@reactive-resume/ui/components/separator";
 import { Spinner } from "@reactive-resume/ui/components/spinner";
 import { cn } from "@reactive-resume/utils/style";
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { CheckPanel } from "../features/check/check-panel";
 import type { CheckIssue } from "../features/check/issue-model";
 import { DesignPanel } from "../features/design/design-panel";
+import {
+	templateDisplayName,
+	type TemplateThumbnailDependencies,
+} from "../features/design/template-thumbnail";
 import type { ResumePdfRender } from "../features/export/render-resume-pdf";
 import { type LoadPdfDocument, PdfPreview } from "../features/preview/pdf-preview";
 import { WritePanel } from "../features/write/write-panel";
@@ -43,6 +48,9 @@ export type EditorShellProps = {
 	selectedIssue?: PageMapTarget | null;
 	onReviewIssue: (issue: CheckIssue) => void;
 	onShowOnPdf: (target: PageMapTarget) => void;
+	/** Tests can disable or inject the gallery's PDF thumbnail renderer. */
+	designThumbnailsEnabled?: boolean;
+	designThumbnailDependencies?: TemplateThumbnailDependencies;
 	onReloadFromDisk?: () => void;
 	onKeepEditing?: () => void;
 	resolvingConflict?: boolean;
@@ -180,6 +188,8 @@ export function EditorShell({
 	selectedIssue = null,
 	onReviewIssue,
 	onShowOnPdf,
+	designThumbnailsEnabled = true,
+	designThumbnailDependencies,
 	onReloadFromDisk,
 	onKeepEditing,
 	resolvingConflict = false,
@@ -190,6 +200,43 @@ export function EditorShell({
 	const fullName = state.data?.basics.name.trim() || "Untitled resume";
 	const label = resume?.label ?? state.selectedId ?? "no-file";
 	const updatedAt = formatUpdatedAt(resume?.updatedAt);
+	const appliedTemplate = state.data?.metadata.template ?? null;
+	const [previewTemplate, setPreviewTemplate] = useState<Template | null>(null);
+	const isPreviewing = previewTemplate !== null && previewTemplate !== appliedTemplate;
+
+	useEffect(() => {
+		// A template only previews while Design is open; switching tabs restores the applied page.
+		if (activeTab !== "design") setPreviewTemplate(null);
+	}, [activeTab]);
+
+	useEffect(() => {
+		// Applying the template already clears the preview; this also catches a reload that lands on it.
+		if (previewTemplate !== null && previewTemplate === appliedTemplate) setPreviewTemplate(null);
+	}, [appliedTemplate, previewTemplate]);
+
+	useEffect(() => {
+		if (previewTemplate === null) return;
+		const onEscape = (event: globalThis.KeyboardEvent) => {
+			if (event.key === "Escape") setPreviewTemplate(null);
+		};
+		document.addEventListener("keydown", onEscape);
+		return () => document.removeEventListener("keydown", onEscape);
+	}, [previewTemplate]);
+
+	const previewData = useMemo(() => {
+		if (!state.data) return null;
+		if (!previewTemplate || previewTemplate === state.data.metadata.template) return state.data;
+		return { ...state.data, metadata: { ...state.data.metadata, template: previewTemplate } };
+	}, [previewTemplate, state.data]);
+
+	const handlePreviewRendered = useCallback(
+		(result: ResumePdfRender | null) => {
+			// A temporary template never becomes the downloadable PDF. The applied render keeps that role.
+			if (isPreviewing) return;
+			onPdfRendered?.(result);
+		},
+		[isPreviewing, onPdfRendered],
+	);
 
 	return (
 		<div className="flex min-h-dvh flex-col bg-bg text-ink">
@@ -368,7 +415,15 @@ export function EditorShell({
 									</div>
 								) : isDesignPanel ? (
 									<div className="mt-6 flex flex-1 flex-col">
-										{state.data ? <DesignPanel data={state.data} onEdit={onEdit} /> : null}
+										{state.data ? (
+											<DesignPanel
+												data={state.data}
+												onEdit={onEdit}
+												onPreviewTemplate={setPreviewTemplate}
+												thumbnailsEnabled={designThumbnailsEnabled && activeTab === "design"}
+												thumbnailDependencies={designThumbnailDependencies}
+											/>
+										) : null}
 										<div className="mt-6 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
 											<Icon name="info" />
 											<span>Design edits use the same in-memory draft and Save changes flow.</span>
@@ -407,7 +462,9 @@ export function EditorShell({
 								Live PDF preview
 							</h2>
 							<p className="mt-0.5 text-xs text-ink-3">
-								The PDF shown here is the same Blob the download archives.
+								{isPreviewing
+									? "Temporary template preview. Download still uses the applied draft."
+									: "The PDF shown here is the same Blob the download archives."}
 							</p>
 						</div>
 						<div className="flex flex-wrap items-center gap-2">
@@ -425,6 +482,17 @@ export function EditorShell({
 							</Button>
 						</div>
 					</div>
+
+					{isPreviewing && previewTemplate ? (
+						<div
+							role="status"
+							data-testid="template-preview-status"
+							className="flex items-center gap-2 border-b border-accent/30 bg-accent-soft px-4 py-2 text-xs font-medium text-accent-text"
+						>
+							<Icon name="eye" className="shrink-0" />
+							<span>Previewing {templateDisplayName(previewTemplate)} · click to apply</span>
+						</div>
+					) : null}
 
 					{exportMessage ? (
 						<div
@@ -455,14 +523,14 @@ export function EditorShell({
 						</div>
 					) : null}
 
-					<div className="flex flex-1 justify-center overflow-auto bg-sunken p-4 sm:p-8">
-						{state.data ? (
+					<div className="flex flex-1 flex-col overflow-auto bg-sunken p-4 sm:p-8">
+						{previewData ? (
 							<PdfPreview
-								data={state.data}
+								data={previewData}
 								renderPdf={renderPdf}
 								loadDocument={loadPdfDocument}
 								selectedIssue={selectedIssue}
-								onRendered={onPdfRendered}
+								onRendered={handlePreviewRendered}
 							/>
 						) : null}
 					</div>

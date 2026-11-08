@@ -2,7 +2,7 @@
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import type { PageMap, PageMapTarget } from "@reactive-resume/pdf/page-map";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ResumePdfRender } from "../export/render-resume-pdf";
@@ -61,6 +61,25 @@ const pdfDocument = (pages = 1) => ({
 	destroy: vi.fn(async () => undefined),
 });
 
+/** A page whose draw can be completed or failed by the test. */
+const deferredPage = () => {
+	let resolveRender: () => void = () => undefined;
+	let rejectRender: (error: Error) => void = () => undefined;
+	const promise = new Promise<void>((resolve, reject) => {
+		resolveRender = resolve;
+		rejectRender = reject;
+	});
+	const page: PdfPageLike = {
+		getViewport: () => ({ width: 595, height: 842 }),
+		render: vi.fn(() => ({ promise, cancel: vi.fn() })),
+	};
+	return {
+		page,
+		resolve: () => resolveRender(),
+		reject: (error: Error) => rejectRender(error),
+	};
+};
+
 beforeAll(() => {
 	// happy-dom has no canvas backend; the preview only needs a context to pass to pdfjs.
 	vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
@@ -88,10 +107,10 @@ describe("PdfPreview", () => {
 		);
 
 		expect(await screen.findByLabelText("PDF page 1")).toBeTruthy();
-		expect(screen.getByText("Page 1 of 1")).toBeTruthy();
+		await waitFor(() => expect(screen.getByText("Page 1 of 1")).toBeTruthy());
 		expect(renderPdf).toHaveBeenCalledWith(data);
 		expect(loadDocument).toHaveBeenCalledWith(result.blob);
-		expect(onRendered).toHaveBeenCalledWith(result);
+		await waitFor(() => expect(onRendered).toHaveBeenCalledWith(result));
 		expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(0);
 	});
 
@@ -109,9 +128,8 @@ describe("PdfPreview", () => {
 		);
 
 		await screen.findByLabelText("PDF page 1");
-		const overlays = document.querySelectorAll("[data-page-map-target]");
-		expect(overlays).toHaveLength(1);
-		const selected = overlays[0];
+		await waitFor(() => expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(1));
+		const selected = document.querySelector("[data-page-map-target]");
 		expect(selected?.getAttribute("data-page-map-target")).toBe("item");
 		expect(selected?.getAttribute("data-selected")).toBe("true");
 		expect(selected?.getAttribute("data-item-id")).toBe("experience-1");
@@ -289,9 +307,229 @@ describe("PdfPreview", () => {
 		);
 
 		await screen.findByLabelText("PDF page 1");
+		await waitFor(() => expect(screen.getByText(/Missing fonts/i)).toBeTruthy());
 		expect(screen.getByText(/Missing fonts/i).textContent).toContain("Merriweather");
 		expect(screen.getByText(/could not be drawn/i).textContent).toContain("U+20B9");
 		expect(screen.getByText(/picture URL/i).textContent).toContain("images.example.test");
 		expect(document.querySelectorAll("[data-page-map-target]")).toHaveLength(0);
+	});
+
+	it("keeps the last completed document visible until a replacement is fully drawable", async () => {
+		const data = syntheticResume();
+		const firstResult = rendered({ blob: new Blob(["%PDF-1.7 first"], { type: "application/pdf" }) });
+		const secondResult = rendered({ blob: new Blob(["%PDF-1.7 second"], { type: "application/pdf" }) });
+		const first = pdfDocument();
+		const second = pdfDocument();
+		let resolveSecond: (document: PdfDocumentLike) => void = () => undefined;
+		const pendingSecond = new Promise<PdfDocumentLike>((resolve) => {
+			resolveSecond = resolve;
+		});
+		const loadDocument = vi
+			.fn<LoadPdfDocument>()
+			.mockResolvedValueOnce(first)
+			.mockImplementationOnce(() => pendingSecond);
+		const renderPdf = vi.fn(async () => firstResult).mockResolvedValueOnce(firstResult).mockResolvedValue(secondResult);
+		const onRendered = vi.fn();
+
+		const { rerender } = render(
+			<PdfPreview data={data} renderPdf={renderPdf} loadDocument={loadDocument} onRendered={onRendered} />,
+		);
+		await screen.findByLabelText("PDF page 1");
+		await waitFor(() => expect(onRendered).toHaveBeenLastCalledWith(firstResult));
+
+		const next = syntheticResume();
+		next.basics.name = "Grace Hopper";
+		rerender(<PdfPreview data={next} renderPdf={renderPdf} loadDocument={loadDocument} onRendered={onRendered} />);
+		await waitFor(() => expect(loadDocument).toHaveBeenCalledTimes(2));
+
+		// The first document is still active and the replacement has not appeared yet.
+		expect(first.destroy).not.toHaveBeenCalled();
+		expect(document.querySelector('[data-pdf-layer="active"]')).not.toBeNull();
+		expect(document.querySelector('[data-pdf-layer="staged"]')).toBeNull();
+
+		await act(async () => {
+			resolveSecond(second);
+			await pendingSecond;
+		});
+
+		await waitFor(() => expect(first.destroy).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(onRendered).toHaveBeenLastCalledWith(secondResult));
+		expect(document.querySelector('[data-pdf-layer="active"]')).not.toBeNull();
+		expect(document.querySelector('[data-pdf-layer="staged"]')).toBeNull();
+		expect(second.destroy).not.toHaveBeenCalled();
+	});
+
+	it("keeps the active document until both pages of a two-page replacement draw successfully", async () => {
+		const data = syntheticResume();
+		const firstResult = rendered({ blob: new Blob(["%PDF-1.7 first"], { type: "application/pdf" }) });
+		const secondResult = rendered({ blob: new Blob(["%PDF-1.7 second"], { type: "application/pdf" }) });
+		const active = pdfDocument();
+		const firstPage = deferredPage();
+		const secondPage = deferredPage();
+		const replacement = {
+			numPages: 2,
+			getPage: vi.fn(async (pageNumber: number) =>
+				pageNumber === 1 ? firstPage.page : secondPage.page,
+			),
+			destroy: vi.fn(async () => undefined),
+		};
+		const loadDocument = vi
+			.fn<LoadPdfDocument>()
+			.mockResolvedValueOnce(active)
+			.mockResolvedValueOnce(replacement);
+		const renderPdf = vi
+			.fn(async () => firstResult)
+			.mockResolvedValueOnce(firstResult)
+			.mockResolvedValue(secondResult);
+		const onRendered = vi.fn();
+
+		const { rerender } = render(
+			<PdfPreview data={data} renderPdf={renderPdf} loadDocument={loadDocument} onRendered={onRendered} />,
+		);
+		await screen.findByLabelText("PDF page 1");
+		await waitFor(() => expect(onRendered).toHaveBeenLastCalledWith(firstResult));
+
+		const next = syntheticResume();
+		next.basics.name = "Grace Hopper";
+		rerender(<PdfPreview data={next} renderPdf={renderPdf} loadDocument={loadDocument} onRendered={onRendered} />);
+		await waitFor(() => expect(loadDocument).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(firstPage.page.render).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(secondPage.page.render).toHaveBeenCalledTimes(1));
+
+		// One of two pages drawn: the old document is still the only active layer.
+		await act(async () => {
+			firstPage.resolve();
+			await Promise.resolve();
+		});
+		expect(document.querySelector('[data-pdf-layer="active"]')).not.toBeNull();
+		expect(document.querySelector('[data-pdf-layer="staged"]')).not.toBeNull();
+		expect(active.destroy).not.toHaveBeenCalled();
+		expect(onRendered).toHaveBeenLastCalledWith(firstResult);
+
+		// Both pages drawn: only now is the replacement promoted.
+		await act(async () => {
+			secondPage.resolve();
+			await Promise.resolve();
+		});
+		await waitFor(() => expect(active.destroy).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(onRendered).toHaveBeenLastCalledWith(secondResult));
+		expect(document.querySelector('[data-pdf-layer="staged"]')).toBeNull();
+		expect(replacement.destroy).not.toHaveBeenCalled();
+	});
+
+	it("discards a staged replacement when any page draw fails and keeps the active document", async () => {
+		const data = syntheticResume();
+		const firstResult = rendered({ blob: new Blob(["%PDF-1.7 first"], { type: "application/pdf" }) });
+		const active = pdfDocument();
+		const failingPage = deferredPage();
+		const laterPage = deferredPage();
+		const replacement = {
+			numPages: 2,
+			getPage: vi.fn(async (pageNumber: number) =>
+				pageNumber === 1 ? failingPage.page : laterPage.page,
+			),
+			destroy: vi.fn(async () => undefined),
+		};
+		const loadDocument = vi
+			.fn<LoadPdfDocument>()
+			.mockResolvedValueOnce(active)
+			.mockResolvedValueOnce(replacement);
+		const renderPdf = vi.fn(async () => firstResult);
+		const onRendered = vi.fn();
+
+		const { rerender } = render(
+			<PdfPreview data={data} renderPdf={renderPdf} loadDocument={loadDocument} onRendered={onRendered} />,
+		);
+		await screen.findByLabelText("PDF page 1");
+		await waitFor(() => expect(onRendered).toHaveBeenLastCalledWith(firstResult));
+
+		const next = syntheticResume();
+		next.basics.name = "Grace Hopper";
+		rerender(<PdfPreview data={next} renderPdf={renderPdf} loadDocument={loadDocument} onRendered={onRendered} />);
+		await waitFor(() => expect(loadDocument).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(failingPage.page.render).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(laterPage.page.render).toHaveBeenCalledTimes(1));
+
+		await act(async () => {
+			failingPage.reject(new Error("replacement page draw failed"));
+			await Promise.resolve();
+		});
+
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toMatch(/could not be drawn/i);
+		expect(alert.textContent).toContain("replacement page draw failed");
+		expect(document.querySelector('[data-pdf-layer="staged"]')).toBeNull();
+		expect(document.querySelector('[data-pdf-layer="active"]')).not.toBeNull();
+		expect(replacement.destroy).toHaveBeenCalledTimes(1);
+		expect(active.destroy).not.toHaveBeenCalled();
+		expect(onRendered).toHaveBeenLastCalledWith(firstResult);
+
+		// A later page settling must not revive the discarded replacement.
+		await act(async () => {
+			laterPage.resolve();
+			await Promise.resolve();
+		});
+		expect(active.destroy).not.toHaveBeenCalled();
+		expect(onRendered).toHaveBeenLastCalledWith(firstResult);
+		expect(document.querySelector('[data-pdf-layer="staged"]')).toBeNull();
+	});
+
+	it("keeps the last completed document when a replacement render fails", async () => {
+		const data = syntheticResume();
+		const firstResult = rendered();
+		const first = pdfDocument();
+		const loadDocument = vi.fn<LoadPdfDocument>(async () => first);
+		const renderPdf = vi.fn(async () => firstResult);
+		const onRendered = vi.fn();
+
+		const { rerender } = render(
+			<PdfPreview data={data} renderPdf={renderPdf} loadDocument={loadDocument} onRendered={onRendered} />,
+		);
+		await screen.findByLabelText("PDF page 1");
+		await waitFor(() => expect(onRendered).toHaveBeenLastCalledWith(firstResult));
+
+		renderPdf.mockRejectedValueOnce(new Error("replacement failed"));
+		const next = syntheticResume();
+		next.basics.name = "Grace Hopper";
+		rerender(<PdfPreview data={next} renderPdf={renderPdf} loadDocument={loadDocument} onRendered={onRendered} />);
+
+		expect(await screen.findByRole("alert")).toBeTruthy();
+		expect(first.destroy).not.toHaveBeenCalled();
+		expect(document.querySelector('[data-pdf-layer="active"]')).not.toBeNull();
+		expect(onRendered).toHaveBeenLastCalledWith(firstResult);
+	});
+
+	it("zooms, clamps at the bounds, and resets to fit width", async () => {
+		const data = syntheticResume();
+		render(
+			<PdfPreview data={data} renderPdf={async () => rendered()} loadDocument={async () => pdfDocument()} />,
+		);
+
+		await screen.findByLabelText("PDF page 1");
+		await waitFor(() => expect(screen.getByText("Page 1 of 1")).toBeTruthy());
+
+		const zoomIn = screen.getByRole("button", { name: "Zoom in" });
+		const zoomOut = screen.getByRole("button", { name: "Zoom out" });
+		const fit = screen.getByRole("button", { name: "Fit to width" });
+		const pageWidth = (): string | null | undefined =>
+			screen.getByLabelText("PDF page 1").closest("[data-pdf-page-zoom]")?.getAttribute("data-pdf-page-zoom");
+
+		expect(pageWidth()).toBe("100");
+		fireEvent.click(zoomIn);
+		expect(pageWidth()).toBe("110");
+		fireEvent.click(zoomOut);
+		expect(pageWidth()).toBe("100");
+		fireEvent.click(zoomOut);
+		expect(pageWidth()).toBe("90");
+		fireEvent.click(fit);
+		expect(pageWidth()).toBe("100");
+
+		for (let index = 0; index < 12; index += 1) fireEvent.click(zoomIn);
+		expect(pageWidth()).toBe("200");
+		expect(zoomIn).toHaveProperty("disabled", true);
+
+		for (let index = 0; index < 20; index += 1) fireEvent.click(zoomOut);
+		expect(pageWidth()).toBe("50");
+		expect(zoomOut).toHaveProperty("disabled", true);
 	});
 });
