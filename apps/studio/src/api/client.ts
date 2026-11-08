@@ -30,6 +30,14 @@ export class ResumeApiError extends Error {
 export const isResumeConflictError = (error: unknown): error is ResumeApiError =>
 	error instanceof ResumeApiError && error.code === "CONFLICT";
 
+/** A minimal same-origin notification. Resume content and file paths never travel through this channel. */
+export type ResumeChangeEvent = {
+	resumeId: string;
+	etag?: string;
+};
+
+export type ResumeChangeListener = (event: ResumeChangeEvent) => void;
+
 /** The typed client contract used by the library and editor shell. */
 export type ResumeApiClient = {
 	list(): Promise<ResumeListItem[]>;
@@ -41,6 +49,8 @@ export type ResumeApiClient = {
 	remove(id: string, etag: string): Promise<void>;
 	/** Archives already-rendered PDF bytes through the loopback API and returns the archive filename. */
 	exportPdf(id: string, pdf: Blob): Promise<{ filename: string }>;
+	/** Subscribes to same-origin external-change notifications for one open resume and returns the unsubscribe function. */
+	watch(id: string, listener: ResumeChangeListener): () => void;
 };
 
 export type ResumeApiClientOptions = {
@@ -211,6 +221,38 @@ export const createResumeApiClient = (options: ResumeApiClientOptions = {}): Res
 			// The server echoes the archived bytes; the caller already holds them for download.
 			await response.arrayBuffer().catch(() => undefined);
 			return { filename };
+		},
+
+		watch(id, listener) {
+			const EventSourceImpl = globalThis.EventSource;
+			if (typeof EventSourceImpl !== "function") return () => undefined;
+
+			let source: EventSource;
+			try {
+				source = new EventSourceImpl(url(`/api/resumes/${encodeId(id)}/events`));
+			} catch {
+				return () => undefined;
+			}
+
+			const onChange = (event: MessageEvent): void => {
+				if (typeof event.data !== "string") return;
+
+				try {
+					const body = JSON.parse(event.data) as unknown;
+					if (!isRecord(body) || body.resumeId !== id) return;
+					listener(
+						typeof body.etag === "string" ? { resumeId: id, etag: body.etag } : { resumeId: id },
+					);
+				} catch {
+					// Ignore malformed frames; EventSource will keep the subscription open.
+				}
+			};
+
+			source.addEventListener("change", onChange);
+			return () => {
+				source.removeEventListener("change", onChange);
+				source.close();
+			};
 		},
 	};
 };

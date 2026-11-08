@@ -1,4 +1,4 @@
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, type Page, test } from "@playwright/test";
@@ -197,6 +197,33 @@ test.describe("local editor round trips", () => {
 		await expect(fullName).toHaveValue("Disk Name");
 		await expect(conflict).toHaveCount(0);
 		expect(saves).toBe(2);
+	});
+
+	test("updates the open preview after its synthetic JSON file changes on disk without a reload", async ({
+		page,
+	}) => {
+		await createResume(page, "Hot Reload");
+		const fullName = page.getByLabel("Full name");
+		await fullName.fill("Hot Reload Initial");
+		await saveDraft(page);
+		await expect(page.getByRole("button", { name: "Header: Hot Reload Initial" })).toBeVisible({
+			timeout: 90_000,
+		});
+
+		const filePath = join(resumesDir, "hot-reload.json");
+		const disk = JSON.parse(await readFile(filePath, "utf8")) as { basics: { name: string } };
+		disk.basics.name = "Hot Reload External";
+		const tempPath = join(resumesDir, ".hot-reload.external.tmp");
+		await writeFile(tempPath, `${JSON.stringify(disk, null, 2)}\n`, "utf8");
+		await rename(tempPath, filePath);
+
+		// No page.reload(): the same editor and preview must pick up the external file change.
+		await expect(fullName).toHaveValue("Hot Reload External");
+		await expect(page.getByRole("button", { name: "Header: Hot Reload External" })).toBeVisible({
+			timeout: 90_000,
+		});
+		await expect(page.getByRole("button", { name: "Save changes" })).toBeDisabled();
+		await expect(page.getByRole("alert")).toHaveCount(0);
 	});
 
 	test("reloads the saved authored page layout after moving Experience to page 2", async ({ page }) => {

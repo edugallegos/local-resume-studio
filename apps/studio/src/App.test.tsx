@@ -41,6 +41,7 @@ const makeClient = (overrides: Partial<ResumeApiClient> = {}): ResumeApiClient =
 	rename: vi.fn(async () => storedResume()),
 	remove: vi.fn(async () => undefined),
 	exportPdf: vi.fn(async () => ({ filename: "ada-lovelace.pdf" })),
+	watch: vi.fn(() => () => undefined),
 	...overrides,
 });
 
@@ -304,6 +305,219 @@ describe("App dirty draft navigation", () => {
 		await user.click(screen.getByRole("button", { name: /return to editor/i }));
 		expect(await screen.findByLabelText("Full name")).toHaveProperty("value", "Ada Draft Kept");
 		expect(read).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("App external file hot reload", () => {
+	type Change = { resumeId: string; etag?: string };
+
+	it("auto-refreshes a clean open resume from an external change and unsubscribes on close", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const initial = storedResume(item);
+		const latest = storedResume(item, syntheticResume("Ada External"), "etag-2");
+		const read = vi
+			.fn<ResumeApiClient["read"]>()
+			.mockResolvedValueOnce(initial)
+			.mockResolvedValueOnce(latest);
+		let notify: (change: Change) => void = () => undefined;
+		const unsubscribe = vi.fn();
+		const watch = vi.fn((_id: string, listener: (change: Change) => void) => {
+			notify = listener;
+			return unsubscribe;
+		});
+		const save = vi.fn<ResumeApiClient["save"]>(async () => latest);
+		const renderPdf = vi.fn((_data: ResumeData) => new Promise<never>(() => undefined));
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save, watch });
+
+		render(<App client={client} renderPdf={renderPdf} />);
+		await openResume(user);
+		expect(watch).toHaveBeenCalledWith(item.id, expect.any(Function));
+
+		await act(async () => {
+			notify({ resumeId: item.id, etag: "etag-2" });
+			await Promise.resolve();
+		});
+
+		await waitFor(() => expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Ada External"));
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(save).not.toHaveBeenCalled();
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(screen.getByRole("button", { name: /save changes/i })).toHaveProperty("disabled", true);
+		await waitFor(() =>
+			expect(renderPdf.mock.calls.some(([data]) => data.basics.name === "Ada External")).toBe(true),
+		);
+
+		await user.click(screen.getByRole("button", { name: /library/i }));
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
+	});
+
+	it("preserves a dirty draft and uses the explicit Reload/Keep choices for external changes", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const initial = storedResume(item);
+		const firstDisk = storedResume(item, syntheticResume("Disk One"), "etag-2");
+		const secondDisk = storedResume(item, syntheticResume("Disk Two"), "etag-3");
+		const read = vi
+			.fn<ResumeApiClient["read"]>()
+			.mockResolvedValueOnce(initial)
+			.mockResolvedValueOnce(firstDisk)
+			.mockResolvedValueOnce(secondDisk)
+			.mockResolvedValue(secondDisk);
+		let notify: (change: Change) => void = () => undefined;
+		const watch = vi.fn((_id: string, listener: (change: Change) => void) => {
+			notify = listener;
+			return () => undefined;
+		});
+		const save = vi.fn<ResumeApiClient["save"]>(async () => initial);
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save, watch });
+
+		render(<App client={client} renderPdf={neverRenderPdf} />);
+		await openResume(user);
+
+		const name = screen.getByLabelText("Full name");
+		await user.clear(name);
+		await user.type(name, "Ada Draft");
+		expect(name).toHaveProperty("value", "Ada Draft");
+
+		await act(async () => {
+			notify({ resumeId: item.id, etag: "etag-2" });
+			await Promise.resolve();
+		});
+
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toMatch(/changed on disk/i);
+		expect(alert.textContent).toMatch(/unsaved draft/i);
+		expect(name).toHaveProperty("value", "Ada Draft");
+		expect(screen.getByRole("button", { name: "Reload from disk" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Keep editing" })).toBeTruthy();
+		expect(save).not.toHaveBeenCalled();
+		await waitFor(() => expect(alert.textContent).toMatch(/Latest disk version updated/i));
+
+		await user.click(screen.getByRole("button", { name: "Keep editing" }));
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(name).toHaveProperty("value", "Ada Draft");
+		expect(save).not.toHaveBeenCalled();
+
+		await act(async () => {
+			notify({ resumeId: item.id, etag: "etag-3" });
+			await Promise.resolve();
+		});
+		const secondAlert = await screen.findByRole("alert");
+		await waitFor(() => expect(secondAlert.textContent).toMatch(/Latest disk version updated/i));
+		expect(name).toHaveProperty("value", "Ada Draft");
+
+		await user.click(screen.getByRole("button", { name: "Reload from disk" }));
+		await waitFor(() => expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Disk Two"));
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(save).not.toHaveBeenCalled();
+	});
+
+	it("replays the latest external change that arrived while its own save response was pending", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const initial = storedResume(item);
+		const saved = storedResume(item, syntheticResume("Ada Saved"), "etag-saved");
+		const external = storedResume(item, syntheticResume("Ada External Newer"), "etag-external");
+		let resolveSave: (resume: StoredResume) => void = () => undefined;
+		const pendingSave = new Promise<StoredResume>((resolve) => {
+			resolveSave = resolve;
+		});
+		const read = vi
+			.fn<ResumeApiClient["read"]>()
+			.mockResolvedValueOnce(initial)
+			.mockResolvedValueOnce(external);
+		const save = vi.fn<ResumeApiClient["save"]>(() => pendingSave);
+		let notify: (change: Change) => void = () => undefined;
+		const watch = vi.fn((_id: string, listener: (change: Change) => void) => {
+			notify = listener;
+			return () => undefined;
+		});
+		const renderPdf = vi.fn((_data: ResumeData) => new Promise<never>(() => undefined));
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save, watch });
+
+		render(<App client={client} renderPdf={renderPdf} />);
+		await openResume(user);
+
+		const name = screen.getByLabelText("Full name");
+		await user.clear(name);
+		await user.type(name, "Ada Saved");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+
+		await act(async () => {
+			notify({ resumeId: item.id, etag: "etag-external-old" });
+			notify({ resumeId: item.id, etag: "etag-external" });
+			await Promise.resolve();
+		});
+		expect(read).toHaveBeenCalledTimes(1);
+		expect(screen.queryByRole("alert")).toBeNull();
+
+		await act(async () => {
+			resolveSave(saved);
+			await pendingSave;
+		});
+
+		await waitFor(() =>
+			expect(screen.getByLabelText("Full name")).toHaveProperty("value", "Ada External Newer"),
+		);
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(screen.getByRole("button", { name: /save changes/i })).toHaveProperty("disabled", true);
+		await waitFor(() =>
+			expect(renderPdf.mock.calls.some(([data]) => data.basics.name === "Ada External Newer")).toBe(true),
+		);
+	});
+
+	it("does not treat a watcher event racing its own save response as an external conflict", async () => {
+		const user = userEvent.setup();
+		const item = listItem();
+		const initial = storedResume(item);
+		const saved = storedResume(item, syntheticResume("Ada Saved"), "etag-2");
+		let resolveSave: (resume: StoredResume) => void = () => undefined;
+		const pendingSave = new Promise<StoredResume>((resolve) => {
+			resolveSave = resolve;
+		});
+		const read = vi.fn<ResumeApiClient["read"]>(async () => initial);
+		const save = vi.fn<ResumeApiClient["save"]>(() => pendingSave);
+		let notify: (change: Change) => void = () => undefined;
+		const watch = vi.fn((_id: string, listener: (change: Change) => void) => {
+			notify = listener;
+			return () => undefined;
+		});
+		const client = makeClient({ list: vi.fn(async () => [item]), read, save, watch });
+
+		render(<App client={client} renderPdf={neverRenderPdf} />);
+		await openResume(user);
+
+		const name = screen.getByLabelText("Full name");
+		await user.clear(name);
+		await user.type(name, "Ada Saved");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+
+		await act(async () => {
+			notify({ resumeId: item.id, etag: "etag-2" });
+			await Promise.resolve();
+		});
+		expect(screen.queryByRole("alert")).toBeNull();
+
+		await act(async () => {
+			resolveSave(saved);
+			await pendingSave;
+		});
+
+		await waitFor(() => expect(screen.getByText("Saved")).toBeTruthy());
+		expect(screen.queryByRole("alert")).toBeNull();
+
+		await act(async () => {
+			notify({ resumeId: item.id, etag: "etag-2" });
+			await Promise.resolve();
+		});
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(read).toHaveBeenCalledTimes(1);
+		expect(name).toHaveProperty("value", "Ada Saved");
 	});
 });
 

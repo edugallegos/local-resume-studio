@@ -28,6 +28,7 @@ export type EditorAction =
 	| { type: "save-start" }
 	| { type: "save-success"; data: ResumeData; etag: string; submittedData?: ResumeData }
 	| { type: "save-conflict" }
+	| { type: "external-change" }
 	| { type: "conflict-details"; latestUpdatedAt?: string | null; error?: string | null }
 	| { type: "keep-editing" }
 	| { type: "save-error" }
@@ -105,6 +106,14 @@ export const editorReducer = (state: EditorState, action: EditorAction): EditorS
 			return {
 				...state,
 				dirty: true,
+				status: "conflict",
+				conflict: { loading: true, latestUpdatedAt: null, error: null },
+			};
+
+		case "external-change":
+			// An external edit never replaces the in-memory draft; it opens the same explicit reload/keep choices.
+			return {
+				...state,
 				status: "conflict",
 				conflict: { loading: true, latestUpdatedAt: null, error: null },
 			};

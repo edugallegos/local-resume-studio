@@ -1,9 +1,10 @@
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { StoreError } from "@local-resume/store/errors";
-import type { FileResumeStore } from "@local-resume/store/file-store";
+import { RESUME_ID_PATTERN, type FileResumeStore } from "@local-resume/store/file-store";
 import { MAX_PDF_BYTES } from "@local-resume/store/pdf-export-store";
 import type { PdfExportStore } from "@local-resume/store/pdf-export-store";
 import type { StoredResume } from "@local-resume/store/types";
+import { ResumeChangeHub } from "./file-events";
 
 /** JSON documents are capped at 10 MiB before any parsing or writing happens. */
 export const MAX_JSON_BYTES = 10 * 1024 * 1024;
@@ -216,6 +217,57 @@ const sendPdf = (response: ServerResponse, pdf: Uint8Array, filename: string): v
 	response.end(bytes);
 };
 
+const openChangeStream = (
+	request: IncomingMessage,
+	response: ServerResponse,
+	resumeId: string,
+	changes: ResumeChangeHub,
+): void => {
+	response.writeHead(200, {
+		"Content-Type": "text/event-stream; charset=utf-8",
+		"Cache-Control": "no-store",
+		Connection: "keep-alive",
+		"X-Content-Type-Options": "nosniff",
+	});
+
+	// Flush the response headers and establish the stream before any filesystem event can arrive.
+	response.write(": connected\n\n");
+
+	let unregisterStream: (() => void) | undefined;
+	let heartbeat: NodeJS.Timeout | undefined;
+	let closed = false;
+
+	const cleanup = (): void => {
+		if (closed) return;
+		closed = true;
+		if (heartbeat !== undefined) clearInterval(heartbeat);
+		unsubscribe();
+		unregisterStream?.();
+		if (!response.writableEnded) response.end();
+	};
+
+	const unsubscribe = changes.subscribe(resumeId, (event) => {
+		if (closed || response.writableEnded) return;
+		response.write(`event: change\ndata: ${JSON.stringify(event)}\n\n`);
+	});
+	unregisterStream = changes.registerStream(cleanup);
+
+	// Keep intermediaries from closing an idle local stream; the timer is cleared on every teardown path.
+	heartbeat = setInterval(() => {
+		if (closed || response.writableEnded) {
+			cleanup();
+			return;
+		}
+		response.write(": keep-alive\n\n");
+	}, 15_000);
+	heartbeat.unref();
+
+	request.on("close", cleanup);
+	request.on("error", cleanup);
+	response.on("close", cleanup);
+	response.on("error", cleanup);
+};
+
 const sendError = (response: ServerResponse, error: HttpError, headers: ResponseHeaders = {}): void => {
 	if (response.writableEnded) return;
 	if (response.headersSent) {
@@ -307,6 +359,7 @@ const handleRequest = async (
 	store: FileResumeStore,
 	exports: PdfExportStore,
 	allowedOrigin: string,
+	changes: ResumeChangeHub,
 ): Promise<void> => {
 	const method = (request.method ?? "GET").toUpperCase();
 	const mutation = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
@@ -347,6 +400,24 @@ const handleRequest = async (
 		}
 
 		methodNotAllowed(response, "GET, POST");
+		return;
+	}
+
+	const eventsMatch = /^\/api\/resumes\/([^/]+)\/events$/.exec(pathname);
+	if (eventsMatch?.[1] !== undefined) {
+		if (method !== "GET") {
+			methodNotAllowed(response, "GET");
+			return;
+		}
+
+		const id = decodeResumeId(eventsMatch[1]);
+		if (!RESUME_ID_PATTERN.test(id)) {
+			throw new HttpError(400, "BAD_REQUEST", "The resume ID is invalid.");
+		}
+
+		// Verify that the editor is subscribing to a real, currently valid resume before streaming.
+		await store.read(id);
+		openChangeStream(request, response, id, changes);
 		return;
 	}
 
@@ -450,18 +521,25 @@ const handleRequest = async (
  * Builds the API request handler without creating a listener. The production entry point reuses this for `/api` while
  * serving the built Vite app from the same loopback server.
  */
+export type StudioRequestHandlerDependencies = {
+	changes?: ResumeChangeHub;
+};
+
 export const createStudioRequestHandler = (
 	store: FileResumeStore,
 	exports: PdfExportStore,
 	options: StudioServerOptions,
+	dependencies: StudioRequestHandlerDependencies = {},
 ): StudioRequestHandler => {
 	if (typeof options.allowedOrigin !== "string" || options.allowedOrigin.trim() === "") {
 		throw new Error("A non-empty allowedOrigin is required.");
 	}
 
+	const changes = dependencies.changes ?? new ResumeChangeHub(store);
+
 	return async (request, response) => {
 		try {
-			await handleRequest(request, response, store, exports, options.allowedOrigin);
+			await handleRequest(request, response, store, exports, options.allowedOrigin, changes);
 		} catch (error) {
 			// Drain any unread body so the client can receive the error and reuse the connection.
 			drainRequest(request);
@@ -475,4 +553,17 @@ export const createStudioServer = (
 	store: FileResumeStore,
 	exports: PdfExportStore,
 	options: StudioServerOptions,
-): Server => createServer(createStudioRequestHandler(store, exports, options));
+): Server => {
+	const changes = new ResumeChangeHub(store);
+	const server = createServer(createStudioRequestHandler(store, exports, options, { changes }));
+	const close = server.close.bind(server);
+
+	// End event streams and stop the watcher before waiting for sockets, so `server.close()` cannot hang on an SSE client.
+	server.close = ((callback?: (error?: Error) => void) => {
+		changes.close();
+		return close(callback);
+	}) as Server["close"];
+	server.once("close", () => changes.close());
+
+	return server;
+};

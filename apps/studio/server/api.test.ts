@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { type IncomingHttpHeaders, type Server, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,6 +186,81 @@ const rawRequest = (options: RawRequestOptions): Promise<RawResponse> =>
 
 		request.end(options.body);
 	});
+
+type ServerSentEvent = {
+	event: string;
+	data: string;
+};
+
+type EventStream = {
+	response: Response;
+	next: () => Promise<ServerSentEvent>;
+	close: () => void;
+};
+
+const openEventStream = async (id: string): Promise<EventStream> => {
+	const controller = new AbortController();
+	const response = await fetch(`${baseUrl}/api/resumes/${id}/events`, {
+		headers: { Origin: ALLOWED_ORIGIN },
+		signal: controller.signal,
+	});
+
+	if (response.status !== 200) {
+		controller.abort();
+		throw new Error(`Expected an event stream, received HTTP ${response.status}.`);
+	}
+	if (!response.body) {
+		controller.abort();
+		throw new Error("Expected an event stream body.");
+	}
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+
+	const next = async (): Promise<ServerSentEvent> => {
+		const deadline = Date.now() + 5_000;
+
+		while (Date.now() < deadline) {
+			const separator = buffer.indexOf("\n\n");
+			if (separator >= 0) {
+				const raw = buffer.slice(0, separator);
+				buffer = buffer.slice(separator + 2);
+
+				let event = "message";
+				const data: string[] = [];
+				for (const line of raw.split("\n")) {
+					if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+					if (line.startsWith("data:")) data.push(line.slice("data:".length).trim());
+				}
+
+				// Ignore SSE comments such as the initial connected frame and heartbeats.
+				if (data.length > 0) return { event, data: data.join("\n") };
+				continue;
+			}
+
+			const chunk = await reader.read();
+			if (chunk.done) throw new Error("The event stream ended before a change arrived.");
+			buffer += decoder.decode(chunk.value, { stream: true });
+		}
+
+		throw new Error("Timed out waiting for a resume change event.");
+	};
+
+	const close = (): void => {
+		controller.abort();
+		void reader.cancel().catch(() => undefined);
+	};
+
+	return { response, next, close };
+};
+
+/** Replaces `<id>.json` the way an editor does: write a sibling temp file, then rename it into place. */
+const atomicReplaceResume = async (id: string, data: ResumeData): Promise<void> => {
+	const tempPath = join(resumesDir, `.${id}.external.tmp`);
+	await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+	await rename(tempPath, join(resumesDir, `${id}.json`));
+};
 
 describe("createStudioServer", () => {
 	describe("health and origin policy", () => {
@@ -442,6 +517,85 @@ describe("createStudioServer", () => {
 				body: JSON.stringify(syntheticResume("Missing")),
 			});
 			await expectError(missing, 404, "NOT_FOUND");
+		});
+	});
+
+	describe("external file change notifications", () => {
+		it("streams a minimal event for an external atomic JSON replacement", async () => {
+			const { resume } = await createResume();
+			const stream = await openEventStream(resume.id);
+
+			try {
+				expect(stream.response.headers.get("content-type")).toContain("text/event-stream");
+				expect(stream.response.headers.get("cache-control")).toBe("no-store");
+
+				const external = syntheticResume("Ada External");
+				await atomicReplaceResume(resume.id, external);
+
+				const message = await stream.next();
+				expect(message.event).toBe("change");
+
+				const payload = JSON.parse(message.data) as Record<string, unknown>;
+				const latest = await store.read(resume.id);
+				expect(payload).toEqual({ resumeId: resume.id, etag: latest.etag });
+				expect(Object.keys(payload).sort()).toEqual(["etag", "resumeId"]);
+				expect(message.data).not.toContain("Ada External");
+				expect(message.data).not.toContain(dataRoot);
+				expect(message.data).not.toContain(resumesDir);
+			} finally {
+				stream.close();
+			}
+		});
+
+		it("ignores changes to other resume files", async () => {
+			const { resume: watched } = await createResume("Watched Resume");
+			const { resume: other } = await createResume("Other Resume");
+			const stream = await openEventStream(watched.id);
+
+			try {
+				await atomicReplaceResume(other.id, syntheticResume("Other External"));
+
+				// Give an incorrect implementation time to deliver the unrelated event first.
+				await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+				await atomicReplaceResume(watched.id, syntheticResume("Watched External"));
+
+				const message = await stream.next();
+				const payload = JSON.parse(message.data) as { resumeId: string };
+				expect(payload.resumeId).toBe(watched.id);
+			} finally {
+				stream.close();
+			}
+		});
+
+		it("closes open change streams when the server closes", async () => {
+			const { resume } = await createResume();
+			const stream = await openEventStream(resume.id);
+
+			try {
+				const target = server;
+				server = undefined;
+				expect(target).toBeDefined();
+				await target?.close();
+				await expect(stream.next()).rejects.toThrow(/ended/);
+			} finally {
+				stream.close();
+			}
+		});
+
+		it("returns a stable error for invalid or missing change streams", async () => {
+			await expectError(await fetch(`${baseUrl}/api/resumes/missing/events`), 404, "NOT_FOUND");
+
+			const invalid = await fetch(`${baseUrl}/api/resumes/BAD!/events`, {
+				headers: { Origin: ALLOWED_ORIGIN },
+			});
+			await expectError(invalid, 400, "BAD_REQUEST");
+
+			const wrongMethod = await fetch(`${baseUrl}/api/resumes/ada/events`, {
+				method: "POST",
+				headers: { Origin: ALLOWED_ORIGIN },
+			});
+			await expectError(wrongMethod, 405, "METHOD_NOT_ALLOWED");
+			expect(wrongMethod.headers.get("allow")).toBe("GET");
 		});
 	});
 

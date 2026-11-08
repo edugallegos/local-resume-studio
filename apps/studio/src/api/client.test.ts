@@ -1,8 +1,46 @@
 import type { StoredResume } from "@local-resume/store/types";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createResumeApiClient, isResumeConflictError, ResumeApiError } from "./client";
+
+class FakeEventSource {
+	static instances: FakeEventSource[] = [];
+
+	readonly url: string;
+	closed = false;
+	private listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
+
+	constructor(url: string) {
+		this.url = url;
+		FakeEventSource.instances.push(this);
+	}
+
+	addEventListener(type: string, listener: EventListener): void {
+		const listeners = this.listeners.get(type) ?? new Set();
+		listeners.add(listener as (event: MessageEvent<string>) => void);
+		this.listeners.set(type, listeners);
+	}
+
+	removeEventListener(type: string, listener: EventListener): void {
+		this.listeners.get(type)?.delete(listener as (event: MessageEvent<string>) => void);
+	}
+
+	close(): void {
+		this.closed = true;
+	}
+
+	emit(type: string, data: string): void {
+		for (const listener of [...(this.listeners.get(type) ?? [])]) {
+			listener(new MessageEvent(type, { data }));
+		}
+	}
+}
+
+afterEach(() => {
+	FakeEventSource.instances = [];
+	vi.unstubAllGlobals();
+});
 
 /** Synthetic v6.1.0 fixture. Never use a real person's resume here. */
 const syntheticResume = (): ResumeData => {
@@ -160,5 +198,24 @@ describe("createResumeApiClient", () => {
 		});
 		expect(isResumeConflictError(error)).toBe(true);
 		expect(isResumeConflictError(new Error("not an API error"))).toBe(false);
+	});
+
+	it("subscribes to same-origin resume changes and closes the stream on unsubscribe", () => {
+		vi.stubGlobal("EventSource", FakeEventSource);
+		const client = createResumeApiClient();
+		const changes: Array<{ resumeId: string; etag?: string }> = [];
+
+		const unsubscribe = client.watch("ada-lovelace", (change) => changes.push(change));
+		const source = FakeEventSource.instances[0];
+		expect(source?.url).toBe("/api/resumes/ada-lovelace/events");
+
+		source?.emit("change", JSON.stringify({ resumeId: "ada-lovelace", etag: "etag-2" }));
+		source?.emit("change", JSON.stringify({ resumeId: "grace-hopper", etag: "etag-3" }));
+		source?.emit("change", "not json");
+
+		expect(changes).toEqual([{ resumeId: "ada-lovelace", etag: "etag-2" }]);
+
+		unsubscribe();
+		expect(source?.closed).toBe(true);
 	});
 });

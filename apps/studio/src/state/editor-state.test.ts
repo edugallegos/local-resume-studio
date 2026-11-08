@@ -214,4 +214,18 @@ describe("editorReducer", () => {
 		expect(failed.etag).toBe("etag-1");
 		expect(failed.selectedId).toBe("ada-lovelace");
 	});
+
+	it("opens the existing conflict choices for an external change without replacing a dirty draft", () => {
+		const draft = syntheticResume("Ada External Draft");
+		const state = { ...loadedState(), data: draft, dirty: true, status: "idle" as const };
+
+		const conflicted = editorReducer(state, { type: "external-change" });
+
+		expect(conflicted.status).toBe("conflict");
+		expect(conflicted.dirty).toBe(true);
+		expect(conflicted.data).toBe(draft);
+		expect(conflicted.etag).toBe("etag-1");
+		expect(conflicted.selectedId).toBe("ada-lovelace");
+		expect(conflicted.conflict).toEqual({ loading: true, latestUpdatedAt: null, error: null });
+	});
 });

@@ -144,8 +144,32 @@ RESUME_DATA_DIR=/path/to/local-resume-data pnpm resume:list
 RESUME_DATA_DIR=/path/to/local-resume-data pnpm resume:validate -- /path/to/local-resume-data/resumes/example.json
 ```
 
-Then edit only the requested file, validate again, and reopen or reload the
-resume in the app.
+Then edit only the requested file, validate again, and the open editor refreshes
+its preview automatically when it has no unsaved draft. See
+[External edits and hot reload](#external-edits-and-hot-reload).
+
+## External edits and hot reload
+
+While an editor is open, the UI subscribes to a same-origin local event stream
+for that resume only. The server watches the local `resumes/` directory with
+Node built-ins, re-reads the file after atomic saves, and sends only the resume
+ID and content ETag. Resume content and filesystem paths never travel through
+the notification.
+
+When the file changes externally and the editor has no unsaved draft, the app
+re-reads the latest valid JSON, advances the active ETag, clears stale PDF
+state, and lets the existing preview renderer redraw automatically. No page
+reload is needed.
+
+When the editor has an unsaved draft, nothing is replaced or saved
+automatically. The existing conflict choices appear instead:
+
+- **Reload from disk** replaces the draft only after that click.
+- **Keep editing** preserves the draft and performs no retry or write.
+
+Watcher events caused by the app's own save are ignored while the save is in
+flight and are de-duplicated by ETag after it completes. Representation
+conflicts still use `If-Match` and keep the original ETag protection.
 
 ## Save conflicts and ETags
 

@@ -3,7 +3,7 @@ import type { PageMapTarget } from "@reactive-resume/pdf/page-map";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { Badge } from "@reactive-resume/ui/components/badge";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { createResumeApiClient, isResumeConflictError, type ResumeApiClient } from "./api/client";
+import { createResumeApiClient, isResumeConflictError, type ResumeApiClient, type ResumeChangeEvent } from "./api/client";
 import { type EditorTab, EditorShell } from "./components/editor-shell";
 import type { CheckIssue } from "./features/check/issue-model";
 import { downloadPdf as archiveAndDownloadPdf, type SavePdfFile } from "./features/export/download-pdf";
@@ -61,6 +61,12 @@ export function App({
 	const focusToken = useRef(0);
 	const conflictRequestId = useRef(0);
 	const conflictDetailsRequestId = useRef(0);
+	const externalChangeRequestId = useRef(0);
+	const savingRef = useRef(false);
+	const pendingExternalChangeRef = useRef<ResumeChangeEvent | null>(null);
+	const stateRef = useRef(state);
+	stateRef.current = state;
+	const externalChangeHandlerRef = useRef<(event: ResumeChangeEvent) => void>(() => undefined);
 
 	useEffect(() => {
 		if (activeTab !== "write" || !writeFocus) return;
@@ -147,6 +153,7 @@ export function App({
 		const draft = state.data;
 		conflictRequestId.current += 1;
 		conflictDetailsRequestId.current += 1;
+		savingRef.current = true;
 
 		setSaveMessage(null);
 		dispatch({ type: "save-start" });
@@ -185,6 +192,8 @@ export function App({
 			// Every other failure keeps the same draft and dirty state so nothing disappears.
 			dispatch({ type: "save-error" });
 			setSaveMessage(saveFailureMessage(error));
+		} finally {
+			savingRef.current = false;
 		}
 	};
 
@@ -229,6 +238,109 @@ export function App({
 			if (conflictRequestId.current === requestId) setResolvingConflict(false);
 		}
 	};
+
+	const beginExternalConflict = (id: string, latest?: StoredResume): void => {
+		conflictRequestId.current += 1;
+		conflictDetailsRequestId.current += 1;
+		setResolvingConflict(false);
+		dispatch({ type: "external-change" });
+		setSaveMessage(conflictMessage);
+
+		if (latest) {
+			dispatch({ type: "conflict-details", latestUpdatedAt: latest.updatedAt });
+			return;
+		}
+
+		const detailsRequestId = conflictDetailsRequestId.current;
+		void (async () => {
+			try {
+				const current = await client.read(id);
+				if (conflictDetailsRequestId.current !== detailsRequestId) return;
+				dispatch({ type: "conflict-details", latestUpdatedAt: current.updatedAt });
+			} catch (error) {
+				if (conflictDetailsRequestId.current !== detailsRequestId) return;
+				const detail = messageOf(error, "The latest disk version could not be read.");
+				dispatch({ type: "conflict-details", error: detail });
+				setSaveMessage(`${conflictMessage} The latest disk version could not be read: ${detail}`);
+			}
+		})();
+	};
+
+	const handleExternalChange = async (event: ResumeChangeEvent): Promise<void> => {
+		const current = stateRef.current;
+		const id = current.selectedId;
+		if (!id || event.resumeId !== id) return;
+
+		// A save response owns the next ETag. Keep the latest notification and replay it after the save settles,
+		// because an external write may land after the app's write but before its response arrives.
+		if (savingRef.current || current.status === "saving") {
+			pendingExternalChangeRef.current = event;
+			return;
+		}
+
+		// The ETag already known to the editor (including a just-finished app save) is not an external change.
+		if (event.etag !== undefined && event.etag === current.etag) return;
+
+		if (current.status === "conflict") return;
+		if (current.dirty) {
+			beginExternalConflict(id);
+			return;
+		}
+
+		const requestId = externalChangeRequestId.current + 1;
+		externalChangeRequestId.current = requestId;
+
+		try {
+			const latest = await client.read(id);
+			if (externalChangeRequestId.current !== requestId) return;
+
+			const next = stateRef.current;
+			if (next.selectedId !== id || savingRef.current || next.status === "saving") return;
+
+			// A watcher event can race the save response. Re-check the current ETag after the read.
+			if (next.etag === latest.etag) return;
+			if (next.dirty) {
+				beginExternalConflict(id, latest);
+				return;
+			}
+
+			setSelectedResume(latest);
+			dispatch({ type: "load", selectedId: id, data: latest.data, etag: latest.etag });
+			setSaveMessage(null);
+			setRenderedPdf(null);
+			setExportMessage(null);
+			setSelectedPreviewTarget(null);
+		} catch {
+			// A partial or invalid external write is ignored; the last valid document stays open.
+		}
+	};
+
+	externalChangeHandlerRef.current = (event) => {
+		void handleExternalChange(event);
+	};
+
+	useEffect(() => {
+		if (state.status === "conflict") {
+			// The save itself already presented the disk conflict; Reload from disk reads the latest bytes.
+			pendingExternalChangeRef.current = null;
+			return;
+		}
+		if (savingRef.current || state.status === "saving") return;
+
+		const pending = pendingExternalChangeRef.current;
+		if (!pending || pending.resumeId !== state.selectedId) return;
+
+		// Exactly one replay after the save transition commits. The handler compares the pending ETag with the
+		// resulting state, so the app's own saved ETag is ignored while a newer external ETag re-reads the disk.
+		pendingExternalChangeRef.current = null;
+		externalChangeHandlerRef.current(pending);
+	}, [state.status, state.selectedId]);
+
+	useEffect(() => {
+		const id = state.selectedId;
+		if (view !== "editor" || !id) return;
+		return client.watch(id, (event) => externalChangeHandlerRef.current(event));
+	}, [client, view, state.selectedId]);
 
 	const handleRenamed = (resume: StoredResume, previousId: string): void => {
 		if (state.selectedId !== previousId) return;

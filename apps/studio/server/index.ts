@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { FileResumeStore } from "@local-resume/store/file-store";
 import { PdfExportStore } from "@local-resume/store/pdf-export-store";
 import { createStudioRequestHandler } from "./api";
+import { ResumeChangeHub } from "./file-events";
 
 const HOST = "127.0.0.1";
 const serverDir = fileURLToPath(new URL(".", import.meta.url));
@@ -53,7 +54,8 @@ const dataRoot = process.env.RESUME_DATA_DIR
 	: join(repoRoot, "data");
 const store = new FileResumeStore(join(dataRoot, "resumes"));
 const exports = new PdfExportStore(join(dataRoot, "exports"));
-const apiHandler = createStudioRequestHandler(store, exports, { allowedOrigin });
+const changes = new ResumeChangeHub(store);
+const apiHandler = createStudioRequestHandler(store, exports, { allowedOrigin }, { changes });
 
 const sendText = (response: ServerResponse, status: number, message: string): void => {
 	if (response.writableEnded) return;
@@ -165,6 +167,7 @@ server.on("error", (error) => {
 	console.error(`[studio] ${error.message}`);
 	process.exitCode = 1;
 });
+server.on("close", () => changes.close());
 
 server.listen(port, HOST, () => {
 	console.log(`[studio] API listening on http://${HOST}:${port}`);
@@ -178,6 +181,7 @@ const shutdown = (signal: NodeJS.Signals): void => {
 	shuttingDown = true;
 	console.log(`[studio] Received ${signal}; shutting down.`);
 
+	changes.close();
 	server.close(() => process.exit(0));
 	server.closeAllConnections?.();
 
