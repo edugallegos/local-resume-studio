@@ -130,7 +130,7 @@ preview. Codex discovers project skills from `.agents/skills/`; a user-level
 installation can be made from the public GitHub repository with:
 
 ```bash
-gh skill install <owner>/<repository> local-resume-json-editor --agent codex --scope user
+gh skill install edugallegos/local-resume-studio local-resume-json-editor --agent codex --scope user
 ```
 
 The user-level install makes the skill available across projects. See the
