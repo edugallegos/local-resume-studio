@@ -351,9 +351,15 @@ describe("EditorShell Check parser preview", () => {
 		expect(pdfButton.getAttribute("aria-pressed")).toBe("true");
 		expect(parserButton.getAttribute("aria-pressed")).toBe("false");
 		expect(parserButton).toHaveProperty("disabled", true);
+		const parserHint = "Run Analyze generated PDF to enable this view.";
+		expect(parserButton.parentElement?.getAttribute("title")).toBe(parserHint);
+		expect(parserButton.getAttribute("aria-describedby")).toBe("parser-preview-disabled-hint");
+		expect(screen.getByText(parserHint).className).toContain("sr-only");
 
 		await user.click(screen.getByRole("button", { name: "Analyze generated PDF" }));
 		await waitFor(() => expect(parserButton).toHaveProperty("disabled", false));
+		expect(parserButton.parentElement?.getAttribute("title")).toBeNull();
+		expect(parserButton.getAttribute("aria-describedby")).toBeNull();
 
 		await user.click(parserButton);
 		expect(parserButton.getAttribute("aria-pressed")).toBe("true");

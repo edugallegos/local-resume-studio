@@ -113,6 +113,8 @@ const tabs: TabDefinition[] = [
 const conflictFallback =
 	"This file changed on disk since you opened it. Your unsaved draft and its original ETag are still here.";
 
+const parserPreviewDisabledHint = "Run Analyze generated PDF to enable this view.";
+
 const formatUpdatedAt = (value: string | undefined): string | null => {
 	if (!value) return null;
 	const date = new Date(value);
@@ -727,18 +729,25 @@ export function EditorShell({
 										<Icon name="file-pdf" />
 										PDF
 									</Button>
-									<Button
-										variant={previewMode === "parser" ? "primary" : "ghost"}
-										size="sm"
-										aria-pressed={previewMode === "parser"}
-										aria-label="What a parser reads"
-										title={currentAnalysis ? undefined : "Analyze the generated PDF first"}
-										disabled={!currentAnalysis}
-										onClick={() => setPreviewMode("parser")}
-									>
-										<Icon name="text-aa" />
-										What a parser reads
-									</Button>
+									<span title={currentAnalysis ? undefined : parserPreviewDisabledHint}>
+										<Button
+											variant={previewMode === "parser" ? "primary" : "ghost"}
+											size="sm"
+											aria-pressed={previewMode === "parser"}
+											aria-label="What a parser reads"
+											aria-describedby={currentAnalysis ? undefined : "parser-preview-disabled-hint"}
+											disabled={!currentAnalysis}
+											onClick={() => setPreviewMode("parser")}
+										>
+											<Icon name="text-aa" />
+											What a parser reads
+										</Button>
+										{currentAnalysis ? null : (
+											<span id="parser-preview-disabled-hint" className="sr-only">
+												{parserPreviewDisabledHint}
+											</span>
+										)}
+									</span>
 								</fieldset>
 							) : null}
 							<Badge variant={pdfReady ? "accent" : "outline"}>{pdfReady ? "PDF ready" : "Rendering"}</Badge>
