@@ -315,6 +315,68 @@ describe("createStudioServer", () => {
 
 			await expect(store.list()).resolves.toEqual([]);
 		});
+
+		it("accepts the localhost alias for reads and mutations when 127.0.0.1 is configured", async () => {
+			const aliasOrigin = "http://localhost:3100";
+
+			const created = await fetch(`${baseUrl}/api/resumes`, {
+				method: "POST",
+				headers: { Origin: aliasOrigin, "Content-Type": "application/json" },
+				body: JSON.stringify({ label: "Alias Resume", data: syntheticResume() }),
+			});
+			expect(created.status).toBe(201);
+			const resume = (await created.json()) as StoredResume;
+
+			const list = await fetch(`${baseUrl}/api/resumes`, { headers: { Origin: aliasOrigin } });
+			expect(list.status).toBe(200);
+
+			const saved = await fetch(`${baseUrl}/api/resumes/${resume.id}`, {
+				method: "PUT",
+				headers: { Origin: aliasOrigin, "Content-Type": "application/json", "If-Match": resume.etag },
+				body: JSON.stringify(syntheticResume("Ada Alias")),
+			});
+			expect(saved.status).toBe(200);
+			expect(((await saved.json()) as StoredResume).data.basics.name).toBe("Ada Alias");
+		});
+
+		it("accepts 127.0.0.1 when localhost is the configured origin", async () => {
+			const localhostServer = createStudioServer(store, pdfStore, {
+				allowedOrigin: "http://localhost:3100",
+			});
+			const localhostBaseUrl = await listen(localhostServer);
+
+			try {
+				const response = await fetch(`${localhostBaseUrl}/api/resumes`, {
+					method: "POST",
+					headers: { Origin: "http://127.0.0.1:3100", "Content-Type": "application/json" },
+					body: JSON.stringify({ label: "Loopback Resume", data: syntheticResume() }),
+				});
+				expect(response.status).toBe(201);
+			} finally {
+				await close(localhostServer);
+			}
+		});
+
+		it("rejects loopback aliases with a mismatched scheme or port and every foreign host", async () => {
+			const body = JSON.stringify({ label: "Rejected Resume", data: syntheticResume() });
+
+			for (const origin of [
+				"https://localhost:3100",
+				"http://localhost:3101",
+				"http://127.0.0.1:3101",
+				"http://foreign.example:3100",
+				"http://localhost.evil:3100",
+			]) {
+				const response = await fetch(`${baseUrl}/api/resumes`, {
+					method: "POST",
+					headers: { Origin: origin, "Content-Type": "application/json" },
+					body,
+				});
+				await expectError(response, 403, "FORBIDDEN");
+			}
+
+			await expect(store.list()).resolves.toEqual([]);
+		});
 	});
 
 	describe("resume collection", () => {

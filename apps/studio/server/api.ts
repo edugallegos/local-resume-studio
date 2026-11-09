@@ -324,6 +324,37 @@ const toHttpError = (error: unknown): HttpError => {
 	return new HttpError(500, "INTERNAL_ERROR", "The local server could not complete the request.");
 };
 
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost"]);
+
+/** Parses an origin only when it is already in canonical serialized form. */
+const parseCanonicalOrigin = (value: string): URL | undefined => {
+	try {
+		const parsed = new URL(value);
+		// Paths, credentials, and non-canonical host spellings must not become accepted aliases.
+		return parsed.origin === value ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+};
+
+const matchesAllowedOrigin = (origin: string, allowedOrigin: string): boolean => {
+	if (origin === allowedOrigin) return true;
+
+	const candidate = parseCanonicalOrigin(origin);
+	const allowed = parseCanonicalOrigin(allowedOrigin);
+	if (candidate === undefined || allowed === undefined) return false;
+
+	// Browsers may resolve the same local UI as either loopback name. Accept that one alias only
+	// when scheme and port still match exactly; every other host remains rejected.
+	if (candidate.protocol !== allowed.protocol || candidate.port !== allowed.port) return false;
+
+	return (
+		LOOPBACK_HOSTNAMES.has(candidate.hostname) &&
+		LOOPBACK_HOSTNAMES.has(allowed.hostname) &&
+		candidate.hostname !== allowed.hostname
+	);
+};
+
 const assertOrigin = (request: IncomingMessage, mutation: boolean, allowedOrigin: string): void => {
 	const rawOrigin = request.headers.origin;
 	const origins = rawOrigin === undefined ? [] : Array.isArray(rawOrigin) ? rawOrigin : [rawOrigin];
@@ -340,7 +371,7 @@ const assertOrigin = (request: IncomingMessage, mutation: boolean, allowedOrigin
 	}
 
 	// Reject the request if any supplied Origin differs from the one local studio origin.
-	if (origins.some((origin) => origin !== allowedOrigin)) {
+	if (origins.some((origin) => !matchesAllowedOrigin(origin, allowedOrigin))) {
 		throw new HttpError(403, "FORBIDDEN", "Requests must come from the local studio origin.");
 	}
 };
