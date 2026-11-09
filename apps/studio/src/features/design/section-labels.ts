@@ -1,3 +1,4 @@
+import { getResumeSectionTitle } from "@reactive-resume/pdf/section-title";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { displayedSectionIds, type LayoutColumn } from "../write/resume-edits";
 
@@ -20,15 +21,9 @@ export const SECTION_LABELS = {
 
 export type SectionEntry = { id: string; label: string; hidden: boolean };
 
-/** Resolves one section id to its authored title, falling back to the schema label. */
-export const resolveSectionLabel = (data: ResumeData, id: string): string => {
-	if (id === "summary") return data.summary.title || SECTION_LABELS.summary;
-	const section = (data.sections as Record<string, { title: string } | undefined>)[id];
-	if (section) return section.title || (SECTION_LABELS as Record<string, string | undefined>)[id] || id;
-	const custom = data.customSections.find((candidate) => candidate.id === id);
-	if (custom?.title) return custom.title;
-	return id;
-};
+/** Resolves one section id to its authored title, falling back to the pinned locale catalog. */
+export const resolveSectionLabel = (data: ResumeData, id: string): string =>
+	getResumeSectionTitle(data, id, (SECTION_LABELS as Record<string, string | undefined>)[id] ?? id);
 
 const isHidden = (data: ResumeData, id: string): boolean => {
 	if (id === "summary") return data.summary.hidden;

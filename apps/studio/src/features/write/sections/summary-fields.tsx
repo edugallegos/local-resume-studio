@@ -1,7 +1,9 @@
+import { getResumeSectionTitle } from "@reactive-resume/pdf/section-title";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import type { ResumeEdit } from "../resume-edits";
 import { TextField } from "./field-controls";
 import { SanitizedRichText } from "./rich-text";
+import { SectionHeadingField } from "./section-heading-field";
 
 export type SummaryFieldsProps = {
 	data: ResumeData;
@@ -9,22 +11,24 @@ export type SummaryFieldsProps = {
 };
 
 export function SummaryFields({ data, onEdit }: SummaryFieldsProps) {
+	const heading = getResumeSectionTitle(data, "summary");
+
 	return (
 		<section aria-labelledby="write-summary-title" className="border-b border-line pb-6">
 			<div className="flex flex-wrap items-baseline justify-between gap-2">
 				<h3 id="write-summary-title" className="text-sm font-semibold text-ink">
-					Summary
+					{heading}
 				</h3>
 				<p className="text-xs text-ink-3">Imported formatting is previewed safely; scripts and media are removed.</p>
 			</div>
 
 			<div className="mt-3 grid gap-3">
-				<TextField
+				<SectionHeadingField
 					id="write-summary-heading"
-					label="Summary title"
-					value={data.summary.title}
-					placeholder="Summary"
-					onChange={(value) => onEdit({ type: "update-summary", field: "title", value })}
+					label="Summary heading"
+					section="summary"
+					data={data}
+					onEdit={onEdit}
 				/>
 				<div>
 					<TextField

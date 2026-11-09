@@ -4,7 +4,11 @@ import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderResumePdf } from "../export/render-resume-pdf";
-import { checkExportedPdf, type CheckPdfDocument } from "./pdf-check";
+import {
+	analyzeExportedPdf,
+	checkExportedPdf,
+	type CheckPdfDocument,
+} from "./pdf-check";
 
 const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 const fixedNow = new Date("2026-01-02T00:00:00.000Z");
@@ -98,6 +102,64 @@ const fakeAnalysisDocument = () => {
 	};
 
 	return { document, page };
+};
+
+/**
+ * Two synthetic pages. Page 1 lists its lower line first in stream order, so the document must
+ * reorder it geometrically; page 2 proves the page boundary survives into the extracted text.
+ */
+const fakeTextDocument = () => {
+	const page = (pageNumber: number, items: unknown[]) => ({
+		pageNumber,
+		view: [0, 0, 595, 842],
+		rotate: 0,
+		commonObjs: { has: () => false, get: () => undefined },
+		getTextContent: vi.fn(async (): Promise<{ items?: unknown[] }> => ({ items })),
+		getAnnotations: vi.fn(async () => []),
+		getOperatorList: vi.fn(async () => ({ fnArray: [], argsArray: [] })),
+		cleanup: vi.fn(),
+	});
+
+	const pages = [
+		page(1, [
+			{
+				str: "Second line",
+				transform: [1, 0, 0, 1, 50, 700],
+				width: 70,
+				height: 12,
+				fontName: "f1",
+				hasEOL: false,
+			},
+			{
+				str: "First line",
+				transform: [1, 0, 0, 1, 50, 750],
+				width: 70,
+				height: 12,
+				fontName: "f1",
+				hasEOL: false,
+			},
+		]),
+		page(2, [
+			{
+				str: "Page two text",
+				transform: [1, 0, 0, 1, 50, 750],
+				width: 90,
+				height: 12,
+				fontName: "f1",
+				hasEOL: false,
+			},
+		]),
+	];
+
+	const document = {
+		numPages: 2,
+		getMetadata: vi.fn(async () => ({ info: { Producer: "synthetic" } })),
+		getMarkInfo: vi.fn(async () => ({ Marked: true })),
+		getPage: vi.fn(async (pageNumber: number) => pages[pageNumber - 1]),
+		destroy: vi.fn(async () => undefined),
+	};
+
+	return { document, pages };
 };
 
 afterEach(() => {
@@ -204,6 +266,57 @@ describe("checkExportedPdf", () => {
 		},
 		180_000,
 	);
+
+	it("returns the page-grouped extracted document from the same harvest", async () => {
+		const { document } = fakeTextDocument();
+		const analysis = await analyzeExportedPdf(goodResume(), {
+			renderPdf: async () => ({ blob: new Blob(["%PDF-1.7 synthetic"], { type: "application/pdf" }) }),
+			loadDocument: async () => document as unknown as CheckPdfDocument,
+			now: fixedNow,
+		});
+
+		expect(analysis.document.pages.map((page) => page.pageNumber)).toEqual([1, 2]);
+		expect(analysis.document.pages[0]?.lines.map((line) => line.text)).toEqual(["First line", "Second line"]);
+		expect(analysis.document.pages[1]?.lines.map((line) => line.text)).toEqual(["Page two text"]);
+		expect(analysis.document.fullText).toBe("First line\nSecond line\n\nPage two text");
+		expect(analysis.report.document.pageCount).toBe(2);
+		expect(analysis.report.document.truncated).toBe(false);
+		expect(analysis.semantics.contact.nameLine).toBe("First line");
+		expect(analysis.semantics.headings).toHaveLength(0);
+		expect(analysis.textReadFailed).toBe(false);
+		expect(document.destroy).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the extracted document aligned with page truncation", async () => {
+		const { document } = fakeTextDocument();
+		const analysis = await analyzeExportedPdf(goodResume(), {
+			renderPdf: async () => ({ blob: new Blob(["%PDF-1.7 synthetic"], { type: "application/pdf" }) }),
+			loadDocument: async () => document as unknown as CheckPdfDocument,
+			now: fixedNow,
+			maxPages: 1,
+		});
+
+		expect(analysis.report.document.pageCount).toBe(2);
+		expect(analysis.report.document.truncated).toBe(true);
+		expect(analysis.document.pages).toHaveLength(1);
+		expect(analysis.document.pages[0]?.pageNumber).toBe(1);
+	});
+
+	it("reports a failed page text read instead of a successful blank page", async () => {
+		const { document, pages } = fakeTextDocument();
+		const first = pages[0];
+		if (!first) throw new Error("Synthetic fixture is missing its first page.");
+		vi.mocked(first.getTextContent).mockResolvedValueOnce({});
+
+		const analysis = await analyzeExportedPdf(goodResume(), {
+			renderPdf: async () => ({ blob: new Blob(["%PDF-1.7 synthetic"], { type: "application/pdf" }) }),
+			loadDocument: async () => document as unknown as CheckPdfDocument,
+			now: fixedNow,
+		});
+
+		expect(analysis.textReadFailed).toBe(true);
+		expect(analysis.document.pages[0]?.lines).toHaveLength(0);
+	});
 
 	it("destroys the PDF document after a successful analysis", async () => {
 		const { document } = fakeAnalysisDocument();

@@ -1,10 +1,11 @@
+import { getResumeSectionTitle } from "@reactive-resume/pdf/section-title";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { parseResumeData } from "@reactive-resume/schema/resume/data";
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import { describe, expect, it } from "vitest";
-import { type EditableSection, editResume } from "./resume-edits";
+import { type EditableSection, editResume, type SectionTitleSection } from "./resume-edits";
 
-type RawSection = { items: Record<string, unknown>[] };
+type RawSection = { items: Record<string, unknown>[]; title: string };
 
 const editableSections: EditableSection[] = [
 	"profiles",
@@ -157,6 +158,74 @@ describe("editResume basics and summary", () => {
 		expect(next.summary[field]).toBe("Updated summary");
 		expect(original.summary[field]).not.toBe("Updated summary");
 		expect(next.summary.hidden).toBe(original.summary.hidden);
+	});
+});
+
+describe("editResume section titles", () => {
+	const titleSections: SectionTitleSection[] = ["summary", ...editableSections];
+
+	it.each(titleSections)("updates the %s heading without touching items or unrelated fields", (section) => {
+		const original = fixture();
+		const snapshot = structuredClone(original);
+		const next = editResume(original, {
+			type: "update-section-title",
+			section,
+			value: "Authored heading",
+		});
+
+		if (section === "summary") {
+			expect(next.summary.title).toBe("Authored heading");
+			expect(next.summary.content).toBe(original.summary.content);
+			expect(next.summary.hidden).toBe(original.summary.hidden);
+		} else {
+			expect(sectionsOf(next)[section].title).toBe("Authored heading");
+			expect(sectionsOf(next)[section].items).toEqual(sectionsOf(original)[section].items);
+		}
+
+		expect(next.sections.awards).toEqual(original.sections.awards);
+		expect(next.customSections).toEqual(original.customSections);
+		expect(next.basics).toEqual(original.basics);
+		expect(next.metadata).toEqual(original.metadata);
+		expect((next as ResumeData & { "x-legacy": unknown })["x-legacy"]).toEqual({ nested: true });
+		expect(original).toEqual(snapshot);
+	});
+
+	it("clears a heading so the pinned resolver restores the current locale's default", () => {
+		const original = fixture();
+		original.metadata.page.locale = "de-DE";
+		original.summary.title = "Authored summary";
+		original.sections.experience.title = "Authored experience";
+
+		const clearedSummary = editResume(original, {
+			type: "update-section-title",
+			section: "summary",
+			value: "",
+		});
+		expect(clearedSummary.summary.title).toBe("");
+		expect(getResumeSectionTitle(clearedSummary, "summary")).toBe("Zusammenfassung");
+		expect(getResumeSectionTitle(clearedSummary, "experience")).toBe("Authored experience");
+
+		const clearedExperience = editResume(original, {
+			type: "update-section-title",
+			section: "experience",
+			value: "",
+		});
+		expect(clearedExperience.sections.experience.title).toBe("");
+		expect(getResumeSectionTitle(clearedExperience, "experience")).toBe("Erfahrung");
+		expect(getResumeSectionTitle(clearedExperience, "summary")).toBe("Authored summary");
+	});
+
+	it("changes locale defaults without overwriting authored headings", () => {
+		const original = fixture();
+		original.metadata.page.locale = "en-US";
+		original.summary.title = "";
+		original.sections.education.title = "Authored education";
+
+		const next = editResume(original, { type: "update-page", changes: { locale: "fr-FR" } });
+
+		expect(getResumeSectionTitle(next, "summary")).toBe("Résumé");
+		expect(getResumeSectionTitle(next, "education")).toBe("Authored education");
+		expect(next.sections.education.title).toBe("Authored education");
 	});
 });
 

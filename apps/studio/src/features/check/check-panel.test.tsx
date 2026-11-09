@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
-import type { PdfAtsReport } from "@reactive-resume/resume/ats-pdf";
+import type { PdfAtsReport, ResumeSemantics } from "@reactive-resume/resume/ats-pdf";
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CheckPanel } from "./check-panel";
-import type { CheckExportedPdfOptions } from "./pdf-check";
+import type { CheckExportedPdfOptions, PdfCheckAnalysis } from "./pdf-check";
 
 const fixedNow = new Date("2026-01-02T00:00:00.000Z");
 
@@ -82,6 +82,61 @@ const pdfReport = (): PdfAtsReport => ({
 	jd: null,
 	file: { name: "resume.pdf", sizeBytes: 1234, magicBytesOk: true },
 	document: { pageCount: 2, truncated: true, wordCount: 10, operatorsAvailable: false },
+});
+
+const emptySemantics = (): ResumeSemantics => ({
+	headings: [],
+	sectionTypes: [],
+	contact: {
+		emails: [],
+		phones: [],
+		textUrls: [],
+		annotationUrls: [],
+		nameLine: null,
+		locationLine: null,
+		emailLooksSplit: false,
+		linkMismatches: [],
+	},
+	dates: [],
+	quality: {
+		tokenCount: 0,
+		replacementRatio: 0,
+		puaRatio: 0,
+		ligatureCount: 0,
+		vowellessRatio: 0,
+		lexiconHitRatio: 0,
+		isEnglish: false,
+		runOnTokenRatio: 0,
+		singleCharItemRatio: 0,
+	},
+	bulletLineCount: 0,
+	roleLikeLineCount: 0,
+	allCapsLineCount: 0,
+	quantifiedBulletCount: 0,
+	actionVerbBulletCount: 0,
+	firstPersonCount: 0,
+	longBulletCount: 0,
+	unparseableRanges: [],
+	ambiguousNumericDates: [],
+	employmentGapYears: [],
+	repeatedBulletOpenings: [],
+	repeatedRunningHeads: [],
+});
+
+const pdfAnalysis = (): PdfCheckAnalysis => ({
+	report: pdfReport(),
+	document: {
+		pages: [],
+		lines: [],
+		fullText: "",
+		charCount: 0,
+		wordCount: 0,
+		modalFontSize: null,
+		modalFontRef: null,
+		distinctFontRefs: 0,
+	},
+	semantics: emptySemantics(),
+	textReadFailed: false,
 });
 
 afterEach(() => {
@@ -167,10 +222,10 @@ describe("CheckPanel", () => {
 
 	it("runs an explicit PDF analysis and reports score, findings, skipped checks, and truncation", async () => {
 		const user = userEvent.setup();
-		let resolveAnalysis: (report: PdfAtsReport) => void = () => undefined;
+		let resolveAnalysis: (analysis: PdfCheckAnalysis) => void = () => undefined;
 		const analyzePdf = vi.fn(
 			() =>
-				new Promise<PdfAtsReport>((resolve) => {
+				new Promise<PdfCheckAnalysis>((resolve) => {
 					resolveAnalysis = resolve;
 				}),
 		);
@@ -196,7 +251,7 @@ describe("CheckPanel", () => {
 			expect.objectContaining({ now: fixedNow, jobDescription: "React and TypeScript" }),
 		);
 
-		resolveAnalysis(pdfReport());
+		resolveAnalysis(pdfAnalysis());
 		expect(await screen.findByText("PDF score 55 / 100")).toBeTruthy();
 		expect(screen.getByTestId("pdf-findings").textContent).toContain("NO_TEXT_LAYER");
 		expect(screen.getByText("Skipped checks: 3")).toBeTruthy();
@@ -206,7 +261,7 @@ describe("CheckPanel", () => {
 
 	it("invalidates a completed PDF report when the resume or posting changes", async () => {
 		const user = userEvent.setup();
-		const analyzePdf = vi.fn(async () => pdfReport());
+		const analyzePdf = vi.fn(async () => pdfAnalysis());
 		const props = {
 			now: fixedNow,
 			onReviewIssue: vi.fn(),
@@ -231,13 +286,63 @@ describe("CheckPanel", () => {
 		expect(screen.getByRole("button", { name: "Analyze generated PDF" })).toHaveProperty("disabled", false);
 	});
 
+	it("shares the extracted document with the preview and clears it when the draft changes", async () => {
+		const user = userEvent.setup();
+		const onAnalysisChange = vi.fn();
+		const analyzePdf = vi.fn(async () => pdfAnalysis());
+		const data = incompleteResume();
+
+		const { rerender } = render(
+			<CheckPanel
+				data={data}
+				now={fixedNow}
+				onReviewIssue={vi.fn()}
+				onShowOnPdf={vi.fn()}
+				analyzePdf={analyzePdf}
+				onAnalysisChange={onAnalysisChange}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Analyze generated PDF" }));
+		await screen.findByText("PDF score 55 / 100");
+		expect(onAnalysisChange).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				analysis: expect.objectContaining({
+					report: expect.objectContaining({ score: 55 }),
+					document: expect.objectContaining({ fullText: "" }),
+					semantics: expect.objectContaining({ contact: expect.any(Object) }),
+				}),
+				data,
+				issues: expect.arrayContaining([
+					expect.objectContaining({ code: "MISSING_NAME" }),
+					expect.objectContaining({ code: "MALFORMED_URL", params: { value: "not a url" } }),
+				]),
+			}),
+		);
+
+		const edited = incompleteResume();
+		edited.summary.content = "<p>Changed after the analysis.</p>";
+		rerender(
+			<CheckPanel
+				data={edited}
+				now={fixedNow}
+				onReviewIssue={vi.fn()}
+				onShowOnPdf={vi.fn()}
+				analyzePdf={analyzePdf}
+				onAnalysisChange={onAnalysisChange}
+			/>,
+		);
+
+		await waitFor(() => expect(onAnalysisChange).toHaveBeenLastCalledWith(null));
+	});
+
 	it("aborts an in-flight PDF analysis and ignores its late report", async () => {
 		const user = userEvent.setup();
-		let resolveAnalysis: (report: PdfAtsReport) => void = () => undefined;
+		let resolveAnalysis: (analysis: PdfCheckAnalysis) => void = () => undefined;
 		let signal: { aborted: boolean } | undefined;
 		const analyzePdf = vi.fn((_data: ResumeData, options?: CheckExportedPdfOptions) => {
 			signal = options?.signal;
-			return new Promise<PdfAtsReport>((resolve) => {
+			return new Promise<PdfCheckAnalysis>((resolve) => {
 				resolveAnalysis = resolve;
 			});
 		});
@@ -259,7 +364,7 @@ describe("CheckPanel", () => {
 		await waitFor(() => expect(signal?.aborted).toBe(true));
 
 		await act(async () => {
-			resolveAnalysis(pdfReport());
+			resolveAnalysis(pdfAnalysis());
 		});
 
 		await waitFor(() => expect(screen.queryByText("PDF score 55 / 100")).toBeNull());
@@ -273,7 +378,7 @@ describe("CheckPanel", () => {
 		let signal: { aborted: boolean } | undefined;
 		const analyzePdf = vi.fn((_data: ResumeData, options?: CheckExportedPdfOptions) => {
 			signal = options?.signal;
-			return new Promise<PdfAtsReport>((_resolve, reject) => {
+			return new Promise<PdfCheckAnalysis>((_resolve, reject) => {
 				rejectAnalysis = reject;
 			});
 		});

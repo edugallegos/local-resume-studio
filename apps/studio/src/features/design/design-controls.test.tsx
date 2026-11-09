@@ -371,6 +371,19 @@ describe("DesignPanel", () => {
 		expect(next.summary.content).toBe(data.summary.content);
 		expect(next.sections).toEqual(data.sections);
 	});
+
+	it("localizes default labels while keeping authored section headings", () => {
+		const data = syntheticResume();
+		data.metadata.page.locale = "fr-FR";
+		data.summary.title = "";
+		data.sections.experience.title = "Parcours sur mesure";
+
+		setup(data);
+
+		expect(screen.getByRole("checkbox", { name: "Show Résumé" })).toBeTruthy();
+		expect(screen.getByRole("checkbox", { name: "Show Parcours sur mesure" })).toBeTruthy();
+		expect(screen.queryByRole("checkbox", { name: "Show Experience" })).toBeNull();
+	});
 });
 
 describe("DesignPanel groups", () => {
@@ -560,9 +573,8 @@ describe("DesignPanel advanced controls", () => {
 	it("writes locale, date format, spacing, and visibility flags", async () => {
 		const { user, latest } = await openAdvanced();
 
-		const locale = screen.getByLabelText("Page locale");
-		await user.clear(locale);
-		await user.type(locale, "de-DE");
+		const locale = screen.getByLabelText("Resume language");
+		await user.selectOptions(locale, "de-DE");
 		await user.selectOptions(screen.getByLabelText("Date format"), "iso");
 
 		const gapX = screen.getByLabelText("Horizontal spacing");

@@ -62,6 +62,9 @@ export type EditableSection =
 	| "languages"
 	| "certifications";
 
+/** Every heading the native Write panel can edit. */
+export type SectionTitleSection = "summary" | EditableSection;
+
 export type BasicsField =
 	| "name"
 	| "headline"
@@ -84,6 +87,7 @@ export type NewItemValues = Record<string, unknown>;
 export type ResumeEdit =
 	| { type: "update-basics"; field: BasicsField; value: string }
 	| { type: "update-summary"; field: SummaryField; value: string }
+	| { type: "update-section-title"; section: SectionTitleSection; value: string }
 	| { type: "add-item"; section: EditableSection; item?: NewItemValues }
 	| { type: "update-item"; section: EditableSection; id: string; changes: Record<string, unknown> }
 	| { type: "remove-item"; section: EditableSection; id: string }
@@ -293,6 +297,15 @@ export const editResume = (data: ResumeData, edit: ResumeEdit): ResumeData =>
 
 			case "update-summary": {
 				draft.summary[edit.field] = edit.value;
+				return;
+			}
+
+			case "update-section-title": {
+				// An empty title is intentional: the pinned resolver then prints the current locale's default.
+				if (edit.section === "summary") draft.summary.title = edit.value;
+				else if (Object.hasOwn(draft.sections, edit.section)) {
+					(draft.sections as Record<string, { title: string }>)[edit.section].title = edit.value;
+				}
 				return;
 			}
 

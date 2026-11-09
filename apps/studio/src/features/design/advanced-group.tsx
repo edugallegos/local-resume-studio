@@ -1,6 +1,7 @@
 import { fontList, type FontWeight } from "@reactive-resume/fonts";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { cn } from "@reactive-resume/utils/style";
+import { LocaleSelect } from "../locale-select";
 import type { ResumeEdit } from "../write/resume-edits";
 import { hexToRgba, rgbaToHex } from "./design-color";
 import { fieldClass, NumberInput } from "./design-ui";
@@ -250,14 +251,12 @@ export function AdvancedGroup({ data, onEdit }: AdvancedGroupProps) {
 			<section className="flex flex-col gap-3">
 				<h3 className="text-sm font-semibold text-ink">Page</h3>
 				<div className="grid gap-3 sm:grid-cols-2">
-					<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-						Page locale
-						<input
-							className={fieldClass}
-							value={page.locale}
-							onChange={(event) => onEdit({ type: "update-page", changes: { locale: event.target.value } })}
-						/>
-					</label>
+					<LocaleSelect
+						id="design-page-locale"
+						label="Resume language"
+						value={page.locale}
+						onChange={(locale) => onEdit({ type: "update-page", changes: { locale } })}
+					/>
 					<label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
 						Date format
 						<select

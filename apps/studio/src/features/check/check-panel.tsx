@@ -1,5 +1,4 @@
 import type { PageMapTarget } from "@reactive-resume/pdf/page-map";
-import type { PdfAtsReport } from "@reactive-resume/resume/ats-pdf";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { Badge } from "@reactive-resume/ui/components/badge";
 import { Button } from "@reactive-resume/ui/components/button";
@@ -9,11 +8,19 @@ import { ATS_CATEGORY_LABELS, type CheckIssue } from "./issue-model";
 import { getCheckResult } from "./check-model";
 import { matchPastedJob } from "./job-match";
 import {
-	checkExportedPdf,
+	analyzeExportedPdf,
 	PdfCheckCancelledError,
 	type CheckExportedPdfOptions,
+	type PdfCheckAnalysis,
 	type PdfCheckSignal,
 } from "./pdf-check";
+
+/** The analysis, the current local issues, and the exact draft snapshot they belong to. */
+export type PdfAnalysisSnapshot = {
+	analysis: PdfCheckAnalysis;
+	data: ResumeData;
+	issues: CheckIssue[];
+};
 
 export type CheckPanelProps = {
 	data: ResumeData;
@@ -25,13 +32,18 @@ export type CheckPanelProps = {
 	/** The preview loader is reused for analysis; it returns the same PDF.js proxy shape in production. */
 	loadPdfDocument?: (blob: Blob) => Promise<unknown>;
 	/** Injected for deterministic tests; production performs the local PDF analysis. */
-	analyzePdf?: typeof checkExportedPdf;
+	analyzePdf?: typeof analyzeExportedPdf;
+	/**
+	 * Receives the completed analysis with the draft snapshot it belongs to, or null as soon as it
+	 * becomes stale, so the preview never shows text from an older draft.
+	 */
+	onAnalysisChange?: (snapshot: PdfAnalysisSnapshot | null) => void;
 };
 
 type PdfAnalysisState =
 	| { status: "idle" }
 	| { status: "analyzing" }
-	| { status: "done"; report: PdfAtsReport }
+	| { status: "done"; analysis: PdfCheckAnalysis }
 	| { status: "error"; error: string };
 
 const errorMessage = (error: unknown): string =>
@@ -60,7 +72,8 @@ export function CheckPanel({
 	selectedIssue = null,
 	renderPdf,
 	loadPdfDocument,
-	analyzePdf = checkExportedPdf,
+	analyzePdf = analyzeExportedPdf,
+	onAnalysisChange,
 }: CheckPanelProps) {
 	const { report, issues } = useMemo(() => getCheckResult(data, now), [data, now]);
 	const [posting, setPosting] = useState("");
@@ -68,6 +81,11 @@ export function CheckPanel({
 	const [pdfState, setPdfState] = useState<PdfAnalysisState>({ status: "idle" });
 	const activeSignal = useRef<PdfCheckSignal | null>(null);
 	const mounted = useRef(true);
+	const onAnalysisChangeRef = useRef(onAnalysisChange);
+
+	useEffect(() => {
+		onAnalysisChangeRef.current = onAnalysisChange;
+	}, [onAnalysisChange]);
 
 	useEffect(() => {
 		mounted.current = true;
@@ -89,6 +107,7 @@ export function CheckPanel({
 			activeSignal.current = null;
 		}
 		setPdfState({ status: "idle" });
+		onAnalysisChangeRef.current?.(null);
 	}, [data, posting]);
 
 	const analyze = async (): Promise<void> => {
@@ -98,9 +117,10 @@ export function CheckPanel({
 		const signal: PdfCheckSignal = { aborted: false };
 		activeSignal.current = signal;
 		setPdfState({ status: "analyzing" });
+		onAnalysisChangeRef.current?.(null);
 
 		try {
-			const pdfReport = await analyzePdf(data, {
+			const analysis = await analyzePdf(data, {
 				now: now ?? new Date(),
 				...(posting.trim() ? { jobDescription: posting.trim() } : {}),
 				...(renderPdf ? { renderPdf } : {}),
@@ -110,10 +130,12 @@ export function CheckPanel({
 				signal,
 			});
 			if (signal.aborted) return;
-			setPdfState({ status: "done", report: pdfReport });
+			setPdfState({ status: "done", analysis });
+			onAnalysisChangeRef.current?.({ analysis, data, issues });
 		} catch (error) {
 			if (signal.aborted || error instanceof PdfCheckCancelledError) return;
 			setPdfState({ status: "error", error: errorMessage(error) });
+			onAnalysisChangeRef.current?.(null);
 		} finally {
 			if (activeSignal.current === signal) {
 				activeSignal.current = null;
@@ -122,7 +144,8 @@ export function CheckPanel({
 		}
 	};
 
-	const pdfReport = pdfState.status === "done" ? pdfState.report : null;
+	const pdfAnalysis = pdfState.status === "done" ? pdfState.analysis : null;
+	const pdfReport = pdfAnalysis?.report ?? null;
 
 	return (
 		<div className="flex flex-col gap-6">

@@ -1,11 +1,15 @@
 import type {
+	ExtractedDocument,
 	HarvestProgress,
 	PdfAtsReport,
 	PdfDocumentLike as HarvestPdfDocumentLike,
+	ResumeSemantics,
 } from "@reactive-resume/resume/ats-pdf";
 import {
 	HARVEST_DEFAULTS,
 	analyzePdfResume,
+	buildExtractedDocument,
+	buildResumeSemantics,
 	harvestPdfDocument,
 } from "@reactive-resume/resume/ats-pdf";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
@@ -17,6 +21,19 @@ export type CheckPdfDocument = HarvestPdfDocumentLike & {
 };
 
 export type PdfCheckSignal = { aborted: boolean };
+
+/**
+ * One local harvest produces both the scored report and the geometric document the parser view
+ * renders. Keeping them together guarantees the text belongs to the PDF that was just analyzed.
+ */
+export type PdfCheckAnalysis = {
+	report: PdfAtsReport;
+	document: ExtractedDocument;
+	/** What the pinned parser recognizes in this exact document: contact, headings, dates, links. */
+	semantics: ResumeSemantics;
+	/** At least one page's text could not be read, so an empty view may be a read failure. */
+	textReadFailed: boolean;
+};
 
 export type CheckExportedPdfOptions = {
 	/** Injected for deterministic tests; production renders the current draft locally. */
@@ -67,12 +84,13 @@ const destroyDocument = async (document: CheckPdfDocument | null): Promise<void>
 
 /**
  * Renders the current draft, harvests the resulting PDF locally with the vendored ATS reader, and
- * returns its report. The PDF.js document is released on success, failure, and cancellation.
+ * returns both the report and the extractor's page-grouped document. The PDF.js document is
+ * released on success, failure, and cancellation.
  */
-export const checkExportedPdf = async (
+export const analyzeExportedPdf = async (
 	data: ResumeData,
 	options: CheckExportedPdfOptions = {},
-): Promise<PdfAtsReport> => {
+): Promise<PdfCheckAnalysis> => {
 	const now = options.now ?? new Date();
 	const signal = options.signal;
 	const ensureActive = (): void => {
@@ -107,11 +125,25 @@ export const checkExportedPdf = async (
 		});
 		ensureActive();
 
-		return analyzePdfResume(raw, {
-			now,
-			...(jobDescription ? { jobDescription } : {}),
-		});
+		const extracted = buildExtractedDocument(raw);
+		return {
+			report: analyzePdfResume(raw, {
+				now,
+				...(jobDescription ? { jobDescription } : {}),
+			}),
+			document: extracted,
+			semantics: buildResumeSemantics(raw, extracted, { now }),
+			textReadFailed: raw.textReadFailed === true,
+		};
 	} finally {
 		await destroyDocument(document);
 	}
 };
+
+/**
+ * Report-only wrapper kept for existing callers. The analysis path above shares the same harvest.
+ */
+export const checkExportedPdf = async (
+	data: ResumeData,
+	options: CheckExportedPdfOptions = {},
+): Promise<PdfAtsReport> => (await analyzeExportedPdf(data, options)).report;

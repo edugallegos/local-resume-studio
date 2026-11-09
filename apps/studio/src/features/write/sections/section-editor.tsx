@@ -1,9 +1,11 @@
+import { getResumeSectionTitle } from "@reactive-resume/pdf/section-title";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { Button } from "@reactive-resume/ui/components/button";
 import { Icon, type IconName } from "@reactive-resume/ui/components/icon";
 import type { EditableSection, ResumeEdit } from "../resume-edits";
 import { writeSectionHeadingId } from "../write-focus";
 import { ItemEditor, type SectionField } from "./item-editor";
+import { SectionHeadingField } from "./section-heading-field";
 
 export type SectionDefinition = {
 	title: string;
@@ -132,6 +134,8 @@ export function SectionEditor({ section, data, onEdit }: SectionEditorProps) {
 	const definition = sectionDefinitions[section];
 	const items = (data.sections[section] as unknown as { items: Record<string, unknown>[] }).items;
 	const titleId = writeSectionHeadingId(section);
+	const heading = getResumeSectionTitle(data, section);
+	const headingLabel = `${definition.title} heading`;
 	const plural = items.length === 1 ? definition.singular : `${definition.singular}s`;
 
 	return (
@@ -144,7 +148,7 @@ export function SectionEditor({ section, data, onEdit }: SectionEditorProps) {
 						className="flex items-center gap-2 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 					>
 						<Icon name={definition.icon} className="text-ink-3" />
-						{definition.title}
+						{heading}
 					</h3>
 					<p className="mt-1 text-xs leading-5 text-ink-3">{definition.description}</p>
 				</div>
@@ -162,6 +166,16 @@ export function SectionEditor({ section, data, onEdit }: SectionEditorProps) {
 						Add
 					</Button>
 				</div>
+			</div>
+
+			<div className="mt-3">
+				<SectionHeadingField
+					id={`write-${section}-heading`}
+					label={headingLabel}
+					section={section}
+					data={data}
+					onEdit={onEdit}
+				/>
 			</div>
 
 			{items.length === 0 ? (

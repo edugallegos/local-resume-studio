@@ -67,6 +67,7 @@ describe("toCheckIssue", () => {
 			data,
 		);
 		expect(malformed.title).toBe("A link isn't a full address");
+		expect(malformed.params).toEqual({ value: "not a url" });
 		expect(malformed.editTarget).toEqual({
 			fieldId: "write-basics-website-url",
 			label: "Basics · Website URL",
@@ -85,6 +86,7 @@ describe("toCheckIssue", () => {
 		);
 
 		expect(issue.title).toBe("A date won't be read");
+		expect(issue.params).toEqual({ value: "sometime soon" });
 		expect(issue.categoryLabel).toBe("Dates");
 		expect(issue.editTarget).toEqual({
 			fieldId: "write-certifications-cert-1-date",

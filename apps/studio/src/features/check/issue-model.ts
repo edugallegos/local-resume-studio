@@ -19,6 +19,8 @@ export type CheckIssue = {
 	severity: AtsSeverity;
 	editTarget: CheckEditTarget | null;
 	pageTarget: PageMapTarget | null;
+	/** Structured finding values (for example the exact malformed URL) used for parser-view matching. */
+	params?: AtsFinding["params"];
 };
 
 /** The pinned v6.1.0 Check titles, with section-aware variants resolved by `issueTitle`. */
@@ -280,5 +282,6 @@ export const toCheckIssue = (finding: AtsFinding, data: ResumeData): CheckIssue 
 		severity: finding.severity,
 		editTarget,
 		pageTarget,
+		...(finding.params ? { params: finding.params } : {}),
 	};
 };

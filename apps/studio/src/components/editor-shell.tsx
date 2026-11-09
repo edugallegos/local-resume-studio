@@ -9,8 +9,13 @@ import { Separator } from "@reactive-resume/ui/components/separator";
 import { Spinner } from "@reactive-resume/ui/components/spinner";
 import { cn } from "@reactive-resume/utils/style";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckPanel } from "../features/check/check-panel";
+import {
+	CheckPanel,
+	type CheckPanelProps,
+	type PdfAnalysisSnapshot,
+} from "../features/check/check-panel";
 import type { CheckIssue } from "../features/check/issue-model";
+import { ParserPreview } from "../features/check/parser-preview";
 import {
 	captureFitState,
 	FIT_RENDER_TIMEOUT_MS,
@@ -59,6 +64,8 @@ export type EditorShellProps = {
 	/** The target selected by clicking the applied PDF preview. */
 	selectedPreviewTarget?: PageMapTarget | null;
 	onSelectPreviewTarget?: (target: PageMapTarget) => void;
+	/** Tests can inject a deterministic local PDF analysis for the Check preview toggle. */
+	analyzePdf?: CheckPanelProps["analyzePdf"];
 	/** Tests can disable or inject the gallery's PDF thumbnail renderer. */
 	designThumbnailsEnabled?: boolean;
 	designThumbnailDependencies?: TemplateThumbnailDependencies;
@@ -225,6 +232,7 @@ export function EditorShell({
 	onShowOnPdf,
 	selectedPreviewTarget = null,
 	onSelectPreviewTarget,
+	analyzePdf,
 	designThumbnailsEnabled = true,
 	designThumbnailDependencies,
 	fitRenderTimeoutMs = FIT_RENDER_TIMEOUT_MS,
@@ -242,10 +250,28 @@ export function EditorShell({
 	const [previewTemplate, setPreviewTemplate] = useState<Template | null>(null);
 	const isPreviewing = previewTemplate !== null && previewTemplate !== appliedTemplate;
 
+	const [analysisSnapshot, setAnalysisSnapshot] = useState<PdfAnalysisSnapshot | null>(null);
+	const [previewMode, setPreviewMode] = useState<"pdf" | "parser">("pdf");
+	// Text belongs only to the exact draft that was analyzed. A newer edit makes it unavailable at
+	// once, even before CheckPanel's own invalidation effect runs.
+	const currentSnapshot =
+		analysisSnapshot && state.data && sameResume(analysisSnapshot.data, state.data) ? analysisSnapshot : null;
+	const currentAnalysis = currentSnapshot?.analysis ?? null;
+
 	useEffect(() => {
 		// A template only previews while Design is open; switching tabs restores the applied page.
 		if (activeTab !== "design") setPreviewTemplate(null);
 	}, [activeTab]);
+
+	useEffect(() => {
+		// The parser view is a Check-mode tool; every other tab shows the PDF.
+		if (activeTab !== "check") setPreviewMode("pdf");
+	}, [activeTab]);
+
+	useEffect(() => {
+		// Never leave the parser selected when its analysis is absent or stale.
+		if (previewMode === "parser" && !currentAnalysis) setPreviewMode("pdf");
+	}, [currentAnalysis, previewMode]);
 
 	useEffect(() => {
 		// Applying the template already clears the preview; this also catches a reload that lands on it.
@@ -653,6 +679,8 @@ export function EditorShell({
 												selectedIssue={selectedIssue}
 												renderPdf={renderPdf}
 												loadPdfDocument={loadPdfDocument}
+												analyzePdf={analyzePdf}
+												onAnalysisChange={setAnalysisSnapshot}
 											/>
 										) : null}
 										<div className="mt-6 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-ink-3">
@@ -678,10 +706,41 @@ export function EditorShell({
 							<p className="mt-0.5 text-xs text-ink-3">
 								{isPreviewing
 									? "Temporary template preview. Download still uses the applied draft."
-									: "The PDF shown here is the same Blob the download archives."}
+									: previewMode === "parser" && currentAnalysis
+										? "Extracted text from the analyzed PDF for this draft."
+										: "The PDF shown here is the same Blob the download archives."}
 							</p>
 						</div>
 						<div className="flex flex-wrap items-center gap-2">
+							{activeTab === "check" ? (
+								<fieldset
+									aria-label="Preview mode"
+									className="m-0 flex items-center gap-1 rounded-md border border-line bg-sunken p-0.5"
+								>
+									<Button
+										variant={previewMode === "pdf" ? "primary" : "ghost"}
+										size="sm"
+										aria-pressed={previewMode === "pdf"}
+										aria-label="Show PDF preview"
+										onClick={() => setPreviewMode("pdf")}
+									>
+										<Icon name="file-pdf" />
+										PDF
+									</Button>
+									<Button
+										variant={previewMode === "parser" ? "primary" : "ghost"}
+										size="sm"
+										aria-pressed={previewMode === "parser"}
+										aria-label="What a parser reads"
+										title={currentAnalysis ? undefined : "Analyze the generated PDF first"}
+										disabled={!currentAnalysis}
+										onClick={() => setPreviewMode("parser")}
+									>
+										<Icon name="text-aa" />
+										What a parser reads
+									</Button>
+								</fieldset>
+							) : null}
 							<Badge variant={pdfReady ? "accent" : "outline"}>{pdfReady ? "PDF ready" : "Rendering"}</Badge>
 							<Button
 								variant="secondary"
@@ -738,7 +797,9 @@ export function EditorShell({
 					) : null}
 
 					<div className="flex flex-1 flex-col overflow-auto bg-sunken p-4 sm:p-8">
-						{previewData ? (
+						{previewMode === "parser" && currentSnapshot ? (
+							<ParserPreview analysis={currentSnapshot.analysis} issues={currentSnapshot.issues} />
+						) : previewData ? (
 							<PdfPreview
 								data={previewData}
 								renderPdf={renderPdf}

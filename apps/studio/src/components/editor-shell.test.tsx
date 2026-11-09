@@ -1,11 +1,19 @@
 // @vitest-environment happy-dom
 import type { StoredResume } from "@local-resume/store/types";
+import type { RawExtraction } from "@reactive-resume/resume/ats-pdf";
+import {
+	analyzePdfResume,
+	buildExtractedDocument,
+	buildResumeSemantics,
+} from "@reactive-resume/resume/ats-pdf";
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { CheckPanelProps } from "../features/check/check-panel";
+import type { PdfCheckAnalysis } from "../features/check/pdf-check";
 import type { ResumePdfRender } from "../features/export/render-resume-pdf";
 import type { LoadPdfDocument, PdfDocumentLike } from "../features/preview/pdf-preview";
 import { editResume, type ResumeEdit } from "../features/write/resume-edits";
@@ -52,6 +60,9 @@ type HarnessProps = {
 	loadPdfDocument: LoadPdfDocument;
 	initialData?: ResumeData;
 	fitRenderTimeoutMs?: number;
+	analyzePdf?: CheckPanelProps["analyzePdf"];
+	/** Renders a button that applies a draft edit, so invalidation can be tested from Check mode. */
+	showEditControl?: boolean;
 };
 
 function Harness({
@@ -61,6 +72,8 @@ function Harness({
 	loadPdfDocument,
 	initialData,
 	fitRenderTimeoutMs,
+	analyzePdf,
+	showEditControl = false,
 }: HarnessProps) {
 	const [state, setState] = useState<EditorState>({
 		...initialEditorState,
@@ -78,35 +91,105 @@ function Harness({
 		etag: "etag-1",
 		data: state.data ?? syntheticResume(),
 	};
+	const applyEdit = (edit: ResumeEdit) => {
+		onEdit(edit);
+		setState((current) =>
+			current.data
+				? { ...current, data: editResume(current.data, edit), dirty: true, status: "idle" }
+				: current,
+		);
+	};
 
 	return (
-		<EditorShell
-			state={state}
-			resume={resume}
-			activeTab={activeTab}
-			onTabChange={setActiveTab}
-			onBack={() => undefined}
-			onEdit={(edit) => {
-				onEdit(edit);
-				setState((current) =>
-					current.data
-						? { ...current, data: editResume(current.data, edit), dirty: true, status: "idle" }
-						: current,
-				);
-			}}
-			onSave={() => undefined}
-			renderPdf={renderPdf}
-			loadPdfDocument={loadPdfDocument}
-			onPdfRendered={onPdfRendered}
-			onDownloadPdf={() => undefined}
-			pdfReady
-			onReviewIssue={() => undefined}
-			onShowOnPdf={() => undefined}
-			designThumbnailsEnabled={false}
-			fitRenderTimeoutMs={fitRenderTimeoutMs}
-		/>
+		<>
+			{showEditControl ? (
+				<button
+					type="button"
+					onClick={() =>
+						applyEdit({ type: "update-summary", field: "content", value: "<p>Edited while checking.</p>" })
+					}
+				>
+					Test edit draft
+				</button>
+			) : null}
+			<EditorShell
+				state={state}
+				resume={resume}
+				activeTab={activeTab}
+				onTabChange={setActiveTab}
+				onBack={() => undefined}
+				onEdit={applyEdit}
+				onSave={() => undefined}
+				renderPdf={renderPdf}
+				loadPdfDocument={loadPdfDocument}
+				onPdfRendered={onPdfRendered}
+				onDownloadPdf={() => undefined}
+				pdfReady
+				onReviewIssue={() => undefined}
+				onShowOnPdf={() => undefined}
+				analyzePdf={analyzePdf}
+				designThumbnailsEnabled={false}
+				fitRenderTimeoutMs={fitRenderTimeoutMs}
+			/>
+		</>
 	);
 }
+
+/** Synthetic one-page extraction run through the real pinned document builder. */
+const parserAnalysis = (): PdfCheckAnalysis => {
+	const raw: RawExtraction = {
+		version: 1,
+		file: { name: "resume.pdf", sizeBytes: 512, magicBytesOk: true },
+		pageCount: 1,
+		truncated: false,
+		textReadFailed: false,
+		annotationReadFailed: false,
+		pages: [
+			{
+				pageNumber: 1,
+				width: 595,
+				height: 842,
+				rotation: 0,
+				items: [
+					{
+						str: "Parser text",
+						transform: [1, 0, 0, 1, 50, 750],
+						width: 60,
+						height: 12,
+						fontRef: "f1",
+						hasEol: false,
+					},
+				],
+				operators: null,
+			},
+		],
+		fonts: [],
+		links: [],
+		metadata: {
+			producer: null,
+			creator: null,
+			title: null,
+			author: null,
+			language: null,
+			pdfVersion: null,
+			isEncrypted: false,
+			isXfa: false,
+			isCollection: false,
+			isTagged: false,
+			hasAcroForm: false,
+		},
+		operatorsAvailable: false,
+	};
+
+	const now = new Date("2026-01-02T00:00:00.000Z");
+	const document = buildExtractedDocument(raw);
+	return {
+		report: analyzePdfResume(raw, { now }),
+		document,
+		semantics: buildResumeSemantics(raw, document, { now }),
+		textReadFailed: false,
+	};
+};
 
 const setup = () => {
 	const onEdit = vi.fn<(edit: ResumeEdit) => void>();
@@ -237,6 +320,53 @@ const pdfWithSpillingExperience = (): ResumePdfRender => ({
 			},
 		],
 	},
+});
+
+describe("EditorShell Check parser preview", () => {
+	it("enables the parser view only after analysis and falls back to PDF when the draft changes", async () => {
+		const onEdit = vi.fn<(edit: ResumeEdit) => void>();
+		const onPdfRendered = vi.fn<(result: ResumePdfRender | null) => void>();
+		const renderPdf = vi.fn(async (data: ResumeData) => renderFor(data));
+		const analyzePdf = vi.fn(async () => parserAnalysis());
+		const user = userEvent.setup();
+
+		render(
+			<Harness
+				onEdit={onEdit}
+				onPdfRendered={onPdfRendered}
+				renderPdf={renderPdf}
+				loadPdfDocument={async () => pdfDocument()}
+				analyzePdf={analyzePdf}
+				showEditControl
+			/>,
+		);
+
+		expect(screen.queryByRole("group", { name: "Preview mode" })).toBeNull();
+
+		await user.click(screen.getByRole("tab", { name: /check/i }));
+		const group = screen.getByRole("group", { name: "Preview mode" });
+		const pdfButton = within(group).getByRole("button", { name: "Show PDF preview" });
+		const parserButton = within(group).getByRole("button", { name: "What a parser reads" });
+
+		expect(pdfButton.getAttribute("aria-pressed")).toBe("true");
+		expect(parserButton.getAttribute("aria-pressed")).toBe("false");
+		expect(parserButton).toHaveProperty("disabled", true);
+
+		await user.click(screen.getByRole("button", { name: "Analyze generated PDF" }));
+		await waitFor(() => expect(parserButton).toHaveProperty("disabled", false));
+
+		await user.click(parserButton);
+		expect(parserButton.getAttribute("aria-pressed")).toBe("true");
+		expect(pdfButton.getAttribute("aria-pressed")).toBe("false");
+		expect(screen.getByTestId("parser-preview")).toBeTruthy();
+		expect(screen.getByRole("heading", { name: "Page 1" })).toBeTruthy();
+		expect(within(screen.getByTestId("parser-page-1")).getByText("Parser text")).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "Test edit draft" }));
+		await waitFor(() => expect(screen.queryByTestId("parser-preview")).toBeNull());
+		expect(pdfButton.getAttribute("aria-pressed")).toBe("true");
+		expect(parserButton).toHaveProperty("disabled", true);
+	});
 });
 
 describe("EditorShell authored-page overflow and Fit", () => {

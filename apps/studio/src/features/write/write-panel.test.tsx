@@ -1,11 +1,13 @@
 // @vitest-environment happy-dom
+import { getResumeSectionTitle } from "@reactive-resume/pdf/section-title";
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
 import { defaultResumeData } from "@reactive-resume/schema/resume/default";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSectionItem, type EditableSection, editResume } from "./resume-edits";
+import { sectionDefinitions } from "./sections/section-editor";
 import { WritePanel } from "./write-panel";
 
 const editableSections: EditableSection[] = [
@@ -97,13 +99,23 @@ const fixture = (): ResumeData => {
 	return data;
 };
 
-function Harness({ initial }: { initial: ResumeData }) {
+function Harness({
+	initial,
+	onData,
+}: {
+	initial: ResumeData;
+	onData?: (data: ResumeData) => void;
+}) {
 	const [data, setData] = useState(initial);
 	return (
 		<WritePanel
 			data={data}
 			onEdit={(edit) => {
-				setData((current) => editResume(current, edit));
+				setData((current) => {
+					const next = editResume(current, edit);
+					onData?.(next);
+					return next;
+				});
 			}}
 		/>
 	);
@@ -281,5 +293,81 @@ describe("WritePanel", () => {
 		expect(preview.innerHTML).toContain("<em>safe</em>");
 		expect(preview.innerHTML.toLowerCase()).not.toContain("<img");
 		expect(preview.querySelector("img")).toBeNull();
+	});
+
+	it("selects the output language without overwriting authored headings or content", async () => {
+		const user = userEvent.setup();
+		const initial = fixture();
+		initial.metadata.page.locale = "en-US";
+		initial.summary.title = "";
+		initial.sections.experience.title = "Authored career history";
+		initial.summary.content = "<p>Keep this authored summary.</p>";
+		const onData = vi.fn<(data: ResumeData) => void>();
+		render(<Harness initial={initial} onData={onData} />);
+
+		const select = screen.getByRole("combobox", { name: "Resume language" });
+		expect(select).toHaveProperty("value", "en-US");
+		await user.selectOptions(select, "de-DE");
+
+		const next = onData.mock.calls.at(-1)?.[0] as ResumeData;
+		expect(next.metadata.page.locale).toBe("de-DE");
+		expect(next.summary.content).toBe("<p>Keep this authored summary.</p>");
+		expect(next.sections.experience.title).toBe("Authored career history");
+		expect(screen.getByLabelText("Summary heading").getAttribute("placeholder")).toBe("Zusammenfassung");
+		expect(screen.getByRole("heading", { name: "Zusammenfassung" })).toBeTruthy();
+		expect(screen.getByRole("heading", { name: "Authored career history" })).toBeTruthy();
+	});
+
+	it("edits and resets the summary and every native section heading", async () => {
+		const user = userEvent.setup();
+		const initial = fixture();
+		initial.metadata.page.locale = "de-DE";
+		render(<Harness initial={initial} />);
+
+		const summary = screen.getByLabelText("Summary heading");
+		expect(summary).toHaveProperty("value", "");
+		expect(summary.getAttribute("placeholder")).toBe("Zusammenfassung");
+
+		await user.type(summary, "Career summary");
+		expect(summary).toHaveProperty("value", "Career summary");
+		expect(screen.getByRole("heading", { name: "Career summary" })).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "Reset Summary heading to default" }));
+		expect(summary).toHaveProperty("value", "");
+		expect(screen.getByRole("heading", { name: "Zusammenfassung" })).toBeTruthy();
+
+		for (const section of editableSections) {
+			const label = `${sectionDefinitions[section].title} heading`;
+			const expected = getResumeSectionTitle(initial, section);
+			const input = screen.getByLabelText(label);
+			expect(input).toHaveProperty("value", "");
+			expect(input.getAttribute("placeholder")).toBe(expected);
+
+			await user.type(input, `Custom ${section}`);
+			expect(input).toHaveProperty("value", `Custom ${section}`);
+			expect(screen.getByRole("heading", { name: `Custom ${section}` })).toBeTruthy();
+
+			await user.click(screen.getByRole("button", { name: `Reset ${label} to default` }));
+			expect(input).toHaveProperty("value", "");
+			expect(screen.getByRole("heading", { name: expected })).toBeTruthy();
+		}
+	});
+
+	it("writes a custom heading through the edit flow without rewriting items or unknown fields", async () => {
+		const user = userEvent.setup();
+		const initial = fixture() as ResumeData & { "x-document-version": number };
+		initial["x-document-version"] = 9;
+		const onData = vi.fn<(data: ResumeData) => void>();
+		render(<Harness initial={initial} onData={onData} />);
+
+		const input = screen.getByLabelText("Experience heading");
+		await user.type(input, "Career history");
+
+		const next = onData.mock.calls.at(-1)?.[0] as ResumeData & { "x-document-version": number };
+		expect(next.sections.experience.title).toBe("Career history");
+		expect(next.sections.experience.items).toEqual(initial.sections.experience.items);
+		expect(next.sections.awards).toEqual(initial.sections.awards);
+		expect(next.summary).toEqual(initial.summary);
+		expect(next["x-document-version"]).toBe(9);
 	});
 });

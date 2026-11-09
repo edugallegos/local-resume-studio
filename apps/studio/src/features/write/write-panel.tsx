@@ -1,4 +1,5 @@
 import type { ResumeData } from "@reactive-resume/schema/resume/data";
+import { LocaleSelect } from "../locale-select";
 import type { EditableSection, ResumeEdit } from "./resume-edits";
 import { BasicsFields } from "./sections/basics-fields";
 import { SectionEditor } from "./sections/section-editor";
@@ -30,6 +31,22 @@ export function WritePanel({ data, onEdit }: WritePanelProps) {
 				Edit the core resume content here. Imported HTML is previewed with a formatting-only allowlist, and fields
 				you do not edit stay exactly as they are stored.
 			</p>
+
+			<section aria-labelledby="write-language-title" className="border-b border-line pb-6">
+				<div className="flex flex-wrap items-baseline justify-between gap-2">
+					<h3 id="write-language-title" className="text-sm font-semibold text-ink">
+						Language
+					</h3>
+					<p className="text-xs text-ink-3">The output language for built-in headings and dates.</p>
+				</div>
+				<div className="mt-3 max-w-sm">
+					<LocaleSelect
+						id="write-resume-locale"
+						value={data.metadata.page.locale}
+						onChange={(locale) => onEdit({ type: "update-page", changes: { locale } })}
+					/>
+				</div>
+			</section>
 
 			<BasicsFields data={data} onEdit={onEdit} />
 			<SummaryFields data={data} onEdit={onEdit} />
